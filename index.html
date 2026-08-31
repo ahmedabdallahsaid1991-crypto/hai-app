@@ -12,6 +12,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="ترصد العدوى">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
   :root{
     --navy:#1F4E5F;
@@ -225,7 +226,7 @@ function emptyDept(meta){
 
 function defaultState(){
   return {
-    facility:{ name:'', dept:'', period:'2026', preparedBy:'', reviewedBy:'', approvalDate:'' },
+    facility:{ name:'مستشفى الحمام المركزي', dept:'', period:'2026', preparedBy:'فريق مكافحة العدوى\nد/ أحمد عبدالله سعيد', reviewedBy:'', approvalDate:'' },
     census:{ days: Array.from({length:31}, (_,i)=>({day:i+1, patients:null, uc:null, tempCVC:null, permCVC:null, vent:null})) },
     depts: DEPT_META.map(emptyDept),
     surgery:{ cases:null, operations:null },
@@ -669,7 +670,7 @@ function viewSettings(){
         <div class="field"><label>اسم المنشأة الصحية</label><input type="text" id="fName" value="${f.name}"></div>
         <div class="field"><label>القسم / الجناح</label><input type="text" id="fDept" value="${f.dept}"></div>
         <div class="field"><label>فترة الترصد (السنة/الشهر)</label><input type="text" id="fPeriod" value="${f.period}"></div>
-        <div class="field"><label>أُعدت بواسطة</label><input type="text" id="fPrep" value="${f.preparedBy}"></div>
+        <div class="field"><label>أُعدت بواسطة</label><textarea id="fPrep" rows="2" style="width:100%; padding:6px 7px; border:1px solid var(--border); border-radius:6px; font-family:inherit; font-size:13px; text-align:right; resize:vertical;">${f.preparedBy}</textarea></div>
         <div class="field"><label>راجعها (لجنة مكافحة العدوى)</label><input type="text" id="fRev" value="${f.reviewedBy}"></div>
         <div class="field"><label>تاريخ الاعتماد</label><input type="date" id="fDate" value="${f.approvalDate}"></div>
       </div>
@@ -708,6 +709,16 @@ function viewSettings(){
     </div>
 
     <div class="card section">
+      <h2>📊 التصدير الشهري إلى Excel</h2>
+      <p style="font-size:13px; margin:0 0 10px 0;">في آخر كل شهر، نزّل نسخة Excel من كل البيانات المُدخلة (تجميع البيانات، BSI &amp; CLABSI، UTI &amp; CAUTI، HAP &amp; VAP، العمليات الجراحية) بنفس ترتيب الشيت الأصلي.</p>
+      <div class="row2">
+        <button class="btn" id="btnExport">⬇️ تنزيل نسخة Excel من الشهر الحالي</button>
+        <button class="btn ghost" id="btnCloseMonth">📁 إغلاق الشهر وبدء شهر جديد</button>
+      </div>
+      <div class="note">"إغلاق الشهر" بينزّل نسخة Excel تلقائياً أولاً، وبعدين بيحفظ أرقام CAUTI/CLABSI/VAP كـ"الشهر السابق" في لوحة المتابعة، وبيصفّر خانات الإدخال (بيانات المنشأة بتفضل زي ما هي).</div>
+    </div>
+
+    <div class="card section">
       <h2>إدارة البيانات</h2>
       <button class="btn danger" id="btnReset">مسح كل البيانات والبدء من جديد</button>
       <div class="note">هذا الزر يمسح كل الأرقام المُدخلة نهائياً (بيانات المنشأة، السجل اليومي، حالات العدوى). لا يمكن التراجع بعده.</div>
@@ -719,6 +730,22 @@ function viewSettings(){
       state.facility[map[id]] = e.target.value; queueSave(); renderHead();
     });
   });
+  document.getElementById('btnExport').addEventListener('click', ()=>exportToExcel());
+  document.getElementById('btnCloseMonth').addEventListener('click', async ()=>{
+    if(!confirm('هيتم تنزيل نسخة Excel من الشهر الحالي، وبعدها تصفير كل الأرقام (غير بيانات المنشأة) عشان تبدأ شهر جديد. متأكد؟')) return;
+    exportToExcel();
+    const t = computeTotals();
+    state.previous.cauti = String(t.cauti);
+    state.previous.clabsi = String(t.clabsi);
+    state.previous.vap = String(t.vap);
+    const keepFacility = state.facility, keepPrevious = state.previous;
+    state = defaultState();
+    state.facility = keepFacility;
+    state.previous = keepPrevious;
+    await saveState();
+    showToast('تم إغلاق الشهر وبدء شهر جديد');
+    currentPage='dashboard'; renderAll();
+  });
   document.getElementById('btnReset').addEventListener('click', async ()=>{
     if(confirm('هل أنت متأكد؟ سيتم مسح كل البيانات نهائياً.')){
       state = defaultState();
@@ -727,6 +754,66 @@ function viewSettings(){
       currentPage='dashboard'; renderAll();
     }
   });
+}
+
+/* ============================================================
+   EXCEL EXPORT (matches the original workbook's sheet layout)
+   ============================================================ */
+function exportToExcel(){
+  const wb = XLSX.utils.book_new();
+  const t = computeTotals();
+  const ssi = ssiRate();
+  const period = state.facility.period || new Date().toISOString().slice(0,7);
+
+  // --- الغلاف ---
+  const cover = [
+    ['نظام ترصد عدوى المنشآت الصحية (HAI Surveillance System)'],
+    [],
+    ['اسم المنشأة الصحية', state.facility.name||''],
+    ['القسم / الجناح', state.facility.dept||''],
+    ['فترة الترصد', state.facility.period||''],
+    ['أُعدت بواسطة', state.facility.preparedBy||''],
+    ['راجعها', state.facility.reviewedBy||''],
+    ['تاريخ الاعتماد', state.facility.approvalDate||''],
+    ['تاريخ التصدير', new Date().toLocaleString('ar-EG')],
+  ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(cover), 'الغلاف');
+
+  // --- تجميع بيانات ---
+  const censusHead = ['اليوم','عدد المرضى','عدد المرضى بقسطرة بولية','قسطرة مركزية مؤقتة','قسطرة مركزية دائمة','مرضى على جهاز تنفس'];
+  const censusRows = state.census.days.map(d=>[d.day, d.patients??'', d.uc??'', d.tempCVC??'', d.permCVC??'', d.vent??'']);
+  const ct = censusTotals();
+  censusRows.push(['الإجمالي', ct.patients, ct.uc, ct.tempCVC, ct.permCVC, ct.vent]);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([censusHead, ...censusRows]), 'تجميع بيانات');
+
+  // --- BSI & CLABSI / UTI & CAUTI / HAP & VAP ---
+  const deviceSheet = (cfg, name)=>{
+    const head = ['القسم','أيام الإقامة',cfg.caseLabel,cfg.dayLabel,cfg.devCaseLabel,'المعدل','DUR %',cfg.ndLabel,'معدل غير المرتبط'];
+    const rows = [0,1,2,3].map(i=>{
+      const d = computeDept(i);
+      return [d.name||DEPT_META[i].name, d.patientDays, d[cfg.caseKey], d[cfg.dayKey], d[cfg.devCaseKey],
+              fmt(d[cfg.devRateKey]), fmt(d[cfg.durKey]), d[cfg.ndKey], fmt(d[cfg.ndRateKey])];
+    });
+    rows.push(['الإجمالي', t.patientDays, t[cfg.caseKey], t[cfg.dayKey], t[cfg.devCaseKey],
+               fmt(t[cfg.devRateKey]), fmt(t[cfg.durKey]), t[cfg.ndKey], fmt(t[cfg.ndRateKey])]);
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([head, ...rows]), name);
+  };
+  deviceSheet(DEVICE_CONFIG.bsi, 'BSI & CLABSI');
+  deviceSheet(DEVICE_CONFIG.uti, 'UTI & CAUTI');
+  deviceSheet(DEVICE_CONFIG.hap, 'HAP & VAP');
+
+  // --- العمليات الجراحية ---
+  const surg = [
+    ['البند','القيمة'],
+    ['حالات SSI', ssi.cases],
+    ['إجمالي العمليات', ssi.operations],
+    ['معدل SSI لكل 100 عملية', fmt(ssi.rate)],
+  ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(surg), 'العمليات الجراحية');
+
+  const fname = `HAI_${(state.facility.name||'المنشأة').replace(/[^\u0600-\u06FFa-zA-Z0-9]/g,'_')}_${period}.xlsx`;
+  XLSX.writeFile(wb, fname);
+  showToast('تم تنزيل ملف Excel');
 }
 
 /* ============================================================
