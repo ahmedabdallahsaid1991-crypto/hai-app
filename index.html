@@ -391,6 +391,7 @@ const PAGES = [
   {id:'uti',       icon:'💧', label:'UTI & CAUTI', desc:'عدوى المسالك البولية والقسطرة البولية'},
   {id:'hap',       icon:'🫁', label:'HAP & VAP', desc:'الالتهاب الرئوي وجهاز التنفس الصناعي'},
   {id:'surgery',   icon:'🔪', label:'العمليات الجراحية (SSI)', desc:'عدوى موقع الجراحة'},
+  {id:'archive',   icon:'🗄️', label:'الأرشيف الشهري', desc:'سجل ثابت لكل الشهور المقفولة — للاطلاع والتنزيل فقط'},
   {id:'settings',  icon:'⚙️', label:'بيانات المنشأة والتعريفات', desc:'بيانات الغلاف، التعريفات، ودليل المعادلات'},
 ];
 let currentPage = 'dashboard';
@@ -732,8 +733,9 @@ function viewSettings(){
   });
   document.getElementById('btnExport').addEventListener('click', ()=>exportToExcel());
   document.getElementById('btnCloseMonth').addEventListener('click', async ()=>{
-    if(!confirm('هيتم تنزيل نسخة Excel من الشهر الحالي، وبعدها تصفير كل الأرقام (غير بيانات المنشأة) عشان تبدأ شهر جديد. متأكد؟')) return;
+    if(!confirm('هيتم تنزيل نسخة Excel من الشهر الحالي، وحفظ نسخة في الأرشيف المشترك، وبعدها تصفير كل الأرقام (غير بيانات المنشأة) عشان تبدأ شهر جديد. متأكد؟')) return;
     exportToExcel();
+    await archiveCurrentMonth();
     const t = computeTotals();
     state.previous.cauti = String(t.cauti);
     state.previous.clabsi = String(t.clabsi);
@@ -743,7 +745,7 @@ function viewSettings(){
     state.facility = keepFacility;
     state.previous = keepPrevious;
     await saveState();
-    showToast('تم إغلاق الشهر وبدء شهر جديد');
+    showToast('تم إغلاق الشهر، وحُفظت نسخة في الأرشيف');
     currentPage='dashboard'; renderAll();
   });
   document.getElementById('btnReset').addEventListener('click', async ()=>{
@@ -759,7 +761,10 @@ function viewSettings(){
 /* ============================================================
    EXCEL EXPORT (matches the original workbook's sheet layout)
    ============================================================ */
-function exportToExcel(){
+function exportToExcel(customState){
+  const original = state;
+  if(customState) state = customState;
+  try{
   const wb = XLSX.utils.book_new();
   const t = computeTotals();
   const ssi = ssiRate();
@@ -814,8 +819,84 @@ function exportToExcel(){
   const fname = `HAI_${(state.facility.name||'المنشأة').replace(/[^\u0600-\u06FFa-zA-Z0-9]/g,'_')}_${period}.xlsx`;
   XLSX.writeFile(wb, fname);
   showToast('تم تنزيل ملف Excel');
+  } finally {
+    state = original;
+  }
 }
 
+/* ============================================================
+   ARCHIVE (immutable — write-once, never editable or deletable)
+   ============================================================ */
+async function archiveCurrentMonth(){
+  if(!db){ showToast('غير متصل بقاعدة البيانات — لم يُحفظ في الأرشيف'); return; }
+  try{
+    const { doc, setDoc } = window.__firestoreFns;
+    const closedAt = new Date();
+    const id = closedAt.toISOString().replace(/[:.]/g,'-');
+    const t = computeTotals(); const ssi = ssiRate();
+    const record = {
+      closedAt: closedAt.toISOString(),
+      period: state.facility.period || '',
+      facilityName: state.facility.name || '',
+      summary: { cauti:t.cauti, clabsi:t.clabsi, vap:t.vap, ssi:ssi.cases, operations:ssi.operations },
+      snapshot: JSON.parse(JSON.stringify(state))
+    };
+    await setDoc(doc(db,'hai_archive', id), record);
+  }catch(e){
+    showToast('تعذّر الحفظ في الأرشيف (تأكد من ضبط صلاحيات hai_archive)');
+  }
+}
+
+async function viewArchive(){
+  document.getElementById('view').innerHTML = `<div class="card section"><h2>الأرشيف الشهري</h2><p style="font-size:13px; color:var(--muted);">جارِ التحميل...</p></div>`;
+  if(!db){ document.getElementById('view').innerHTML = `<div class="card section"><h2>الأرشيف الشهري</h2><p>غير متصل بقاعدة البيانات.</p></div>`; return; }
+  try{
+    const { collection, getDocs } = window.__firestoreFns;
+    const snap = await getDocs(collection(db,'hai_archive'));
+    const records = [];
+    snap.forEach(d=> records.push({id:d.id, ...d.data()}));
+    records.sort((a,b)=> (b.closedAt||'').localeCompare(a.closedAt||''));
+
+    if(records.length===0){
+      document.getElementById('view').innerHTML = `<div class="card section"><h2>الأرشيف الشهري</h2>
+        <p style="font-size:13px; color:var(--muted);">لسه مفيش أي شهر متقفل. لما حد يدوس "إغلاق الشهر" من صفحة الإعدادات، هيظهر هنا تلقائياً.</p></div>`;
+      return;
+    }
+
+    let rows = records.map(r=>`
+      <tr>
+        <td>${r.period || '—'}</td>
+        <td>${r.facilityName || '—'}</td>
+        <td>${new Date(r.closedAt).toLocaleDateString('ar-EG')}</td>
+        <td>${r.summary?.cauti ?? '—'}</td>
+        <td>${r.summary?.clabsi ?? '—'}</td>
+        <td>${r.summary?.vap ?? '—'}</td>
+        <td>${r.summary?.ssi ?? '—'}</td>
+        <td><button class="btn small" data-id="${r.id}">⬇️ Excel</button></td>
+      </tr>`).join('');
+
+    document.getElementById('view').innerHTML = `
+      <div class="card section">
+        <h2>🗄️ الأرشيف الشهري <span class="tag">${records.length} شهر مقفول</span></h2>
+        <div class="note">كل شهر هنا سجل ثابت ونهائي — لا يمكن تعديله أو حذفه من أي مكان، حتى بعد إغلاقه.</div>
+        <div style="overflow:auto; margin-top:12px;">
+        <table>
+          <thead><tr><th>الفترة</th><th>المنشأة</th><th>تاريخ القفل</th><th>CAUTI</th><th>CLABSI</th><th>VAP</th><th>SSI</th><th></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        </div>
+      </div>`;
+
+    document.getElementById('view').querySelectorAll('button[data-id]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const rec = records.find(r=>r.id===btn.dataset.id);
+        if(rec && rec.snapshot) exportToExcel(rec.snapshot);
+      });
+    });
+  }catch(e){
+    document.getElementById('view').innerHTML = `<div class="card section"><h2>الأرشيف الشهري</h2><p>تعذّر تحميل الأرشيف. تأكد من ضبط صلاحيات القراءة لمجموعة hai_archive.</p></div>`;
+  }
+}
 /* ============================================================
    RENDER ROUTER
    ============================================================ */
@@ -827,6 +908,7 @@ function renderAll(){
   else if(currentPage==='uti') viewDevice('uti');
   else if(currentPage==='hap') viewDevice('hap');
   else if(currentPage==='surgery') viewSurgery();
+  else if(currentPage==='archive') viewArchive();
   else if(currentPage==='settings') viewSettings();
 }
 
@@ -839,7 +921,7 @@ function renderAll(){
 
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-  import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+  import { getFirestore, doc, setDoc, onSnapshot, collection, getDocs } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
   const firebaseConfig = {
     apiKey: "AIzaSyCVHKrG7JqQ3QfJg4P5G3xTT-dnhmniZHg",
@@ -852,7 +934,7 @@ function renderAll(){
 
   const app = initializeApp(firebaseConfig);
   window.__firestoreDb = getFirestore(app);
-  window.__firestoreFns = { doc, setDoc, onSnapshot };
+  window.__firestoreFns = { doc, setDoc, onSnapshot, collection, getDocs };
   window.dispatchEvent(new Event('firebase-ready'));
 </script>
 </body>
