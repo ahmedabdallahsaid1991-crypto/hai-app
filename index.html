@@ -213,10 +213,29 @@
    DATA MODEL
    ============================================================ */
 const DEPT_META = [
-  {id:'icu',  name:'العناية المركزة', censusLinked:true},
-  {id:'nicu', name:'الحضانة',        censusLinked:false},
+  {id:'icu',  name:'العناية المركزة', censusLinked:true, censusSource:'icu'},
+  {id:'nicu', name:'الحضانة',        censusLinked:true, censusSource:'nicu'},
   {id:'d3',   name:'',               censusLinked:false},
   {id:'d4',   name:'',               censusLinked:false},
+];
+
+const WEIGHT_CATS = [
+  {id:'w1', label:'≤ 750 جم'},
+  {id:'w2', label:'751 – 1000 جم'},
+  {id:'w3', label:'1001 – 1500 جم'},
+  {id:'w4', label:'1501 – 2500 جم'},
+  {id:'w5', label:'> 2500 جم'},
+];
+
+const OP_TYPES = [
+  {id:'hyst',     label:'استئصال الرحم'},
+  {id:'appx',     label:'استئصال الزائدة الدودية'},
+  {id:'chole',    label:'استئصال المرارة'},
+  {id:'hipknee',  label:'مفاصل الفخذ والركبة الصناعية'},
+  {id:'cabg',     label:'عمليات القلب المفتوح (CABG)'},
+  {id:'fracture', label:'تثبيت الكسور (عظام)'},
+  {id:'cataract', label:'عدسة العين (الماء الأبيض)'},
+  {id:'cs',       label:'العملية القيصرية'},
 ];
 
 function emptyDept(meta){
@@ -224,12 +243,29 @@ function emptyDept(meta){
            bsi:null, clabsi:null, uti:null, cauti:null, hap:null, vap:null };
 }
 
+function defaultNicuCensus(){
+  const obj = {};
+  WEIGHT_CATS.forEach(w=>{
+    obj[w.id] = Array.from({length:31}, (_,i)=>({day:i+1, pts:null, uc:null, cl:null, mv:null}));
+  });
+  return obj;
+}
+
+function defaultSurgeryCensus(){
+  const obj = {};
+  OP_TYPES.forEach(t=>{
+    obj[t.id] = { days: Array.from({length:31}, ()=>null), ssiCases: null };
+  });
+  return obj;
+}
+
 function defaultState(){
   return {
     facility:{ name:'مستشفى الحمام المركزي', dept:'', period:'2026', preparedBy:'فريق مكافحة العدوى\nد/ أحمد عبدالله سعيد', reviewedBy:'', approvalDate:'' },
     census:{ days: Array.from({length:31}, (_,i)=>({day:i+1, patients:null, uc:null, tempCVC:null, permCVC:null, vent:null})) },
+    nicuCensus: defaultNicuCensus(),
     depts: DEPT_META.map(emptyDept),
-    surgery:{ cases:null, operations:null },
+    surgeryCensus: defaultSurgeryCensus(),
     previous:{ cauti:'', clabsi:'', vap:'' },
     lastSaved:null
   };
@@ -255,6 +291,8 @@ function initFirebase(){
       const loaded = snap.data();
       state = Object.assign(defaultState(), loaded);
       if(!state.depts || state.depts.length!==4){ state.depts = DEPT_META.map(emptyDept); }
+      if(!state.nicuCensus){ state.nicuCensus = defaultNicuCensus(); }
+      if(!state.surgeryCensus){ state.surgeryCensus = defaultSurgeryCensus(); }
     }
     renderAll();
     document.getElementById('saveStatus').textContent = 'متصل ومتزامن';
@@ -309,13 +347,37 @@ function censusTotals(){
   return t;
 }
 
+function nicuCensusTotals(){
+  const t = {pts:0, uc:0, cl:0, mv:0};
+  WEIGHT_CATS.forEach(w=>{
+    (state.nicuCensus[w.id]||[]).forEach(d=>{
+      t.pts += num(d.pts); t.uc += num(d.uc); t.cl += num(d.cl); t.mv += num(d.mv);
+    });
+  });
+  return t;
+}
+
+function nicuCensusTotalsByWeight(wid){
+  const t = {pts:0, uc:0, cl:0, mv:0};
+  (state.nicuCensus[wid]||[]).forEach(d=>{
+    t.pts += num(d.pts); t.uc += num(d.uc); t.cl += num(d.cl); t.mv += num(d.mv);
+  });
+  return t;
+}
+
 function effectiveDept(i){
   const d = state.depts[i];
   const meta = DEPT_META[i];
-  if(meta.censusLinked){
+  if(meta.censusSource==='icu'){
     const c = censusTotals();
     return { name:d.name || meta.name, patientDays:c.patients, cvcDays:c.tempCVC+c.permCVC,
              ucDays:c.uc, ventDays:c.vent, bsi:num(d.bsi), clabsi:num(d.clabsi),
+             uti:num(d.uti), cauti:num(d.cauti), hap:num(d.hap), vap:num(d.vap) };
+  }
+  if(meta.censusSource==='nicu'){
+    const c = nicuCensusTotals();
+    return { name:d.name || meta.name, patientDays:c.pts, cvcDays:c.cl,
+             ucDays:c.uc, ventDays:c.mv, bsi:num(d.bsi), clabsi:num(d.clabsi),
              uti:num(d.uti), cauti:num(d.cauti), hap:num(d.hap), vap:num(d.vap) };
   }
   return { name:d.name, patientDays:num(d.patientDays), cvcDays:num(d.cvcDays), ucDays:num(d.ucDays),
@@ -365,9 +427,20 @@ function computeTotals(){
   };
 }
 
+function surgeryTypeTotals(id){
+  const entry = state.surgeryCensus[id] || {days:[], ssiCases:null};
+  const operations = (entry.days||[]).reduce((a,v)=>a+num(v),0);
+  const ssiCases = num(entry.ssiCases);
+  return { operations, ssiCases, rate: rate(ssiCases, operations, 100) };
+}
+
 function ssiRate(){
-  const c = num(state.surgery.cases), o = num(state.surgery.operations);
-  return { cases:c, operations:o, rate: rate(c,o,100) };
+  let cases=0, operations=0;
+  OP_TYPES.forEach(t=>{
+    const tt = surgeryTypeTotals(t.id);
+    cases += tt.ssiCases; operations += tt.operations;
+  });
+  return { cases, operations, rate: rate(cases, operations, 100) };
 }
 
 function allAlerts(){
@@ -386,11 +459,12 @@ function allAlerts(){
    ============================================================ */
 const PAGES = [
   {id:'dashboard', icon:'📊', label:'لوحة المتابعة', desc:'نظرة عامة على مؤشرات العدوى المكتسبة من الرعاية الصحية'},
-  {id:'census',    icon:'📅', label:'البيانات اليومية', desc:'سجل أيام المرضى والأجهزة الغازية — يغذي قسم العناية المركزة تلقائياً'},
+  {id:'census',    icon:'📅', label:'بيانات العناية المركزة', desc:'سجل أيام المرضى والأجهزة الغازية — يغذي قسم العناية المركزة تلقائياً'},
+  {id:'nicuCensus',icon:'👶', label:'بيانات الحضانة', desc:'سجل يومي حسب فئة وزن الميلاد — يغذي قسم الحضانة تلقائياً'},
   {id:'bsi',       icon:'🩸', label:'BSI & CLABSI', desc:'عدوى مجرى الدم والقسطرة الوريدية المركزية'},
   {id:'uti',       icon:'💧', label:'UTI & CAUTI', desc:'عدوى المسالك البولية والقسطرة البولية'},
   {id:'hap',       icon:'🫁', label:'HAP & VAP', desc:'الالتهاب الرئوي وجهاز التنفس الصناعي'},
-  {id:'surgery',   icon:'🔪', label:'العمليات الجراحية (SSI)', desc:'عدوى موقع الجراحة'},
+  {id:'surgery',   icon:'🔪', label:'العمليات الجراحية (SSI)', desc:'سجل يومي لكل أنواع العمليات المرصودة + حالات ومعدلات SSI لكل نوع'},
   {id:'archive',   icon:'🗄️', label:'الأرشيف الشهري', desc:'سجل ثابت لكل الشهور المقفولة — للاطلاع والتنزيل فقط'},
   {id:'settings',  icon:'⚙️', label:'بيانات المنشأة والتعريفات', desc:'بيانات الغلاف، التعريفات، ودليل المعادلات'},
 ];
@@ -546,6 +620,85 @@ function viewCensus(){
 }
 
 /* ============================================================
+   VIEW: NICU CENSUS (weight-stratified, matches the NICU form)
+   ============================================================ */
+let currentNicuWeight = 'w1';
+
+function viewNicuCensus(){
+  const combined = nicuCensusTotals();
+  const perWeight = WEIGHT_CATS.map(w=>({...w, t: nicuCensusTotalsByWeight(w.id)}));
+
+  const tabs = WEIGHT_CATS.map(w=>`
+    <button class="btn ${w.id===currentNicuWeight?'':'ghost'} small" data-weight="${w.id}" style="margin-left:6px; margin-bottom:6px;">${w.label}</button>
+  `).join('');
+
+  const summaryRows = perWeight.map(w=>`
+    <tr>
+      <td>${w.label}</td><td>${w.t.pts}</td><td>${w.t.uc}</td><td>${w.t.cl}</td><td>${w.t.mv}</td>
+    </tr>`).join('');
+
+  const days = state.nicuCensus[currentNicuWeight];
+  const rows = days.map((d,i)=>`
+    <tr>
+      <td>${d.day}</td>
+      <td><input type="number" min="0" data-i="${i}" data-f="pts" value="${d.pts??''}"></td>
+      <td><input type="number" min="0" data-i="${i}" data-f="uc" value="${d.uc??''}"></td>
+      <td><input type="number" min="0" data-i="${i}" data-f="cl" value="${d.cl??''}"></td>
+      <td><input type="number" min="0" data-i="${i}" data-f="mv" value="${d.mv??''}"></td>
+    </tr>`).join('');
+  const wt = nicuCensusTotalsByWeight(currentNicuWeight);
+
+  document.getElementById('view').innerHTML = `
+    <div class="grid kpi" style="margin-bottom:18px;">
+      ${kpiCard('إجمالي أيام المرضى (كل الفئات)', combined.pts, 'يوم مريض')}
+      ${kpiCard('إجمالي أيام القسطرة المركزية', combined.cl, 'يوم')}
+      ${kpiCard('إجمالي أيام القسطرة البولية', combined.uc, 'يوم')}
+      ${kpiCard('إجمالي أيام جهاز التنفس', combined.mv, 'يوم')}
+    </div>
+
+    <div class="card section">
+      <h2>ملخص فئات الوزن <span class="tag">تلقائي</span></h2>
+      <div style="overflow:auto;">
+      <table>
+        <thead><tr><th>فئة الوزن</th><th>Pts (أيام مرضى)</th><th>U/C (أيام قسطرة بولية)</th><th>CL (أيام قسطرة مركزية)</th><th>MV (أيام جهاز تنفس)</th></tr></thead>
+        <tbody>${summaryRows}</tbody>
+      </table>
+      </div>
+    </div>
+
+    <div class="card section">
+      <h2>📅 السجل اليومي حسب فئة الوزن <span class="tag">يغذي قسم "الحضانة" تلقائياً</span></h2>
+      <div style="margin-bottom:10px;">${tabs}</div>
+      <div style="max-height:440px; overflow:auto; border:1px solid var(--border); border-radius:8px;">
+      <table>
+        <thead><tr><th>اليوم</th><th>Pts</th><th>U/C</th><th>CL</th><th>MV</th></tr></thead>
+        <tbody>${rows}</tbody>
+        <tfoot><tr style="font-weight:800; background:var(--teal-light);">
+          <td>الإجمالي</td><td>${wt.pts}</td><td>${wt.uc}</td><td>${wt.cl}</td><td>${wt.mv}</td>
+        </tr></tfoot>
+      </table>
+      </div>
+    </div>`;
+
+  document.getElementById('view').querySelectorAll('button[data-weight]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{ currentNicuWeight = btn.dataset.weight; viewNicuCensus(); });
+  });
+  document.getElementById('view').querySelectorAll('input').forEach(inp=>{
+    inp.addEventListener('input', ()=>{
+      const i = +inp.dataset.i, f = inp.dataset.f;
+      state.nicuCensus[currentNicuWeight][i][f] = inp.value===''? null : inp.value;
+      queueSave();
+      const t = nicuCensusTotalsByWeight(currentNicuWeight);
+      const totalsRow = document.querySelector('#view tfoot tr');
+      totalsRow.children[1].textContent = t.pts;
+      totalsRow.children[2].textContent = t.uc;
+      totalsRow.children[3].textContent = t.cl;
+      totalsRow.children[4].textContent = t.mv;
+    });
+  });
+}
+
+/* ============================================================
    VIEW: DEVICE SHEETS (BSI & CLABSI / UTI & CAUTI / HAP & VAP)
    ============================================================ */
 const DEVICE_CONFIG = {
@@ -639,24 +792,69 @@ function viewDevice(kind){
    ============================================================ */
 function viewSurgery(){
   const s = ssiRate();
+  const typeRows = OP_TYPES.map(t=>{
+    const tt = surgeryTypeTotals(t.id);
+    return `<tr>
+      <td>${t.label}</td>
+      <td>${tt.operations}</td>
+      <td><input type="number" min="0" data-ssi="${t.id}" value="${state.surgeryCensus[t.id].ssiCases??''}"></td>
+      <td>${fmt(tt.rate)}</td>
+    </tr>`;
+  }).join('');
+
   document.getElementById('view').innerHTML = `
     <div class="grid kpi" style="margin-bottom:18px;">
-      ${kpiCard('حالات SSI', s.cases, 'حالة')}
-      ${kpiCard('إجمالي العمليات', s.operations, 'عملية')}
-      ${kpiCard('معدل SSI', fmt(s.rate), 'لكل 100 عملية جراحية')}
+      ${kpiCard('إجمالي حالات SSI', s.cases, 'حالة')}
+      ${kpiCard('إجمالي العمليات', s.operations, 'عملية (كل الأنواع)')}
+      ${kpiCard('معدل SSI الكلي', fmt(s.rate), 'لكل 100 عملية جراحية')}
     </div>
+
     <div class="card section">
-      <h2>إدخال بيانات العمليات الجراحية</h2>
-      <div class="row2">
-        <div class="field"><label>عدد حالات SSI المرصودة هذا الشهر</label>
-          <input type="number" min="0" id="ssiCases" value="${state.surgery.cases??''}"></div>
-        <div class="field"><label>إجمالي عدد العمليات الجراحية التي أُجريت</label>
-          <input type="number" min="0" id="ssiOps" value="${state.surgery.operations??''}"></div>
+      <h2>📋 السجل اليومي لعدد العمليات — كل الأنواع الخاضعة للترصد</h2>
+      <div style="max-height:480px; overflow:auto; border:1px solid var(--border); border-radius:8px;">
+      <table>
+        <thead><tr><th>اليوم</th>${OP_TYPES.map(t=>`<th>${t.label}</th>`).join('')}</tr></thead>
+        <tbody>
+          ${Array.from({length:31},(_,i)=>`
+            <tr>
+              <td>${i+1}</td>
+              ${OP_TYPES.map(t=>`<td><input type="number" min="0" data-day="${i}" data-type="${t.id}" value="${state.surgeryCensus[t.id].days[i]??''}"></td>`).join('')}
+            </tr>`).join('')}
+        </tbody>
+        <tfoot><tr style="font-weight:800; background:var(--teal-light);">
+          <td>الإجمالي</td>
+          ${OP_TYPES.map(t=>`<td data-total="${t.id}">${surgeryTypeTotals(t.id).operations}</td>`).join('')}
+        </tr></tfoot>
+      </table>
       </div>
-      <div class="note">معدل SSI = (عدد الحالات ÷ إجمالي العمليات) × 100 — ويُحسب تلقائياً بمجرد إدخال الرقمين.</div>
+    </div>
+
+    <div class="card section">
+      <h2>🔬 حالات SSI ومعدلاتها — حسب نوع العملية</h2>
+      <div style="overflow:auto;">
+      <table>
+        <thead><tr><th>نوع العملية</th><th>إجمالي العمليات</th><th>عدد حالات SSI</th><th>المعدل لكل 100 عملية</th></tr></thead>
+        <tbody>${typeRows}</tbody>
+      </table>
+      </div>
+      <div class="note">عدد العمليات بيتحسب تلقائياً من السجل اليومي فوق. عدد حالات SSI بيتحدد بمراجعة إكلينيكية لكل حالة، فهو إدخال يدوي لكل نوع عملية.</div>
     </div>`;
-  document.getElementById('ssiCases').addEventListener('input', e=>{ state.surgery.cases = e.target.value===''?null:e.target.value; queueSave(); viewSurgery(); });
-  document.getElementById('ssiOps').addEventListener('input', e=>{ state.surgery.operations = e.target.value===''?null:e.target.value; queueSave(); viewSurgery(); });
+
+  document.getElementById('view').querySelectorAll('input[data-day]').forEach(inp=>{
+    inp.addEventListener('input', ()=>{
+      const i = +inp.dataset.day, tid = inp.dataset.type;
+      state.surgeryCensus[tid].days[i] = inp.value===''? null : inp.value;
+      queueSave();
+      const total = surgeryTypeTotals(tid).operations;
+      document.querySelector(`[data-total="${tid}"]`).textContent = total;
+    });
+  });
+  document.getElementById('view').querySelectorAll('input[data-ssi]').forEach(inp=>{
+    inp.addEventListener('input', ()=>{
+      state.surgeryCensus[inp.dataset.ssi].ssiCases = inp.value===''? null : inp.value;
+      queueSave(); viewSurgery();
+    });
+  });
 }
 
 /* ============================================================
@@ -807,14 +1005,39 @@ function exportToExcel(customState){
   deviceSheet(DEVICE_CONFIG.uti, 'UTI & CAUTI');
   deviceSheet(DEVICE_CONFIG.hap, 'HAP & VAP');
 
-  // --- العمليات الجراحية ---
-  const surg = [
-    ['البند','القيمة'],
-    ['حالات SSI', ssi.cases],
-    ['إجمالي العمليات', ssi.operations],
-    ['معدل SSI لكل 100 عملية', fmt(ssi.rate)],
-  ];
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(surg), 'العمليات الجراحية');
+  // --- تجميع بيانات الحضانة (NICU, weight-stratified) ---
+  const nicuHead = ['اليوم'];
+  WEIGHT_CATS.forEach(w=> nicuHead.push(`${w.label} - Pts`, `${w.label} - U/C`, `${w.label} - CL`, `${w.label} - MV`));
+  const nicuRows = Array.from({length:31}, (_,i)=>{
+    const row = [i+1];
+    WEIGHT_CATS.forEach(w=>{
+      const d = state.nicuCensus[w.id][i];
+      row.push(d.pts??'', d.uc??'', d.cl??'', d.mv??'');
+    });
+    return row;
+  });
+  const nicuTotalsRow = ['الإجمالي'];
+  WEIGHT_CATS.forEach(w=>{
+    const t = nicuCensusTotalsByWeight(w.id);
+    nicuTotalsRow.push(t.pts, t.uc, t.cl, t.mv);
+  });
+  nicuRows.push(nicuTotalsRow);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([nicuHead, ...nicuRows]), 'تجميع بيانات الحضانة');
+
+  // --- تجميع بيانات العمليات (كل الأنواع) ---
+  const opHead = ['اليوم', ...OP_TYPES.map(t=>t.label)];
+  const opRows = Array.from({length:31}, (_,i)=>[i+1, ...OP_TYPES.map(t=> state.surgeryCensus[t.id].days[i]??'')]);
+  opRows.push(['الإجمالي', ...OP_TYPES.map(t=> surgeryTypeTotals(t.id).operations)]);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([opHead, ...opRows]), 'تجميع بيانات العمليات');
+
+  // --- SSI incidence (بالتفصيل حسب نوع العملية) ---
+  const ssiHead = ['نوع العملية','عدد العمليات','عدد حالات SSI','المعدل لكل 100 عملية'];
+  const ssiRows = OP_TYPES.map(t=>{
+    const tt = surgeryTypeTotals(t.id);
+    return [t.label, tt.operations, tt.ssiCases, fmt(tt.rate)];
+  });
+  ssiRows.push(['الإجمالي', ssi.operations, ssi.cases, fmt(ssi.rate)]);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([ssiHead, ...ssiRows]), 'SSI incidence');
 
   const fname = `HAI_${(state.facility.name||'المنشأة').replace(/[^\u0600-\u06FFa-zA-Z0-9]/g,'_')}_${period}.xlsx`;
   XLSX.writeFile(wb, fname);
@@ -904,6 +1127,7 @@ function renderAll(){
   renderNav(); renderHead();
   if(currentPage==='dashboard') viewDashboard();
   else if(currentPage==='census') viewCensus();
+  else if(currentPage==='nicuCensus') viewNicuCensus();
   else if(currentPage==='bsi') viewDevice('bsi');
   else if(currentPage==='uti') viewDevice('uti');
   else if(currentPage==='hap') viewDevice('hap');
