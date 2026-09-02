@@ -275,12 +275,13 @@ const SSI_CLASS = ['سطحية (Superficial)','عميقة (Deep)','عضو/تجو
 function emptyInfectionCase(dept){
   return { id: 'c'+Date.now()+Math.random().toString(36).slice(2,6), dept,
     patientName:'', medicalRecord:'', admissionDate:'', device:'', onsetDate:'',
-    infectionType:'', organism:'', resistance:'', dischargeDate:'', outcome:'' };
+    infectionType:'', organism:'', resistance:'', dischargeDate:'', outcome:'',
+    createdBy:'', createdAt:'' };
 }
 function emptySsiCase(){
   return { id: 's'+Date.now()+Math.random().toString(36).slice(2,6),
     patientName:'', fileNumber:'', surgeryDate:'', opType:'', surgeon:'',
-    organism:'', resistance:'', classification:'' };
+    organism:'', resistance:'', classification:'', createdBy:'', createdAt:'' };
 }
 
 function defaultState(){
@@ -879,15 +880,16 @@ function viewSurgery(){
       <table class="wide">
         <thead><tr>
           <th>اسم المريض</th><th>رقم الملف</th><th>تاريخ العملية</th><th>نوع العملية</th>
-          <th>اسم الجراح</th><th>الميكروب</th><th>نمط المقاومة</th><th>تصنيف SSI</th><th></th>
+          <th>اسم الجراح</th><th>الميكروب</th><th>نمط المقاومة</th><th>تصنيف SSI</th><th>أُضيفت بواسطة</th><th></th>
         </tr></thead>
         <tbody>${state.ssiCases.length ? state.ssiCases.map(c=>`
           <tr>
             <td>${c.patientName||'—'}</td><td>${c.fileNumber||'—'}</td><td>${c.surgeryDate||'—'}</td>
             <td>${c.opType||'—'}</td><td>${c.surgeon||'—'}</td><td>${c.organism||'—'}</td>
             <td>${c.resistance||'—'}</td><td>${c.classification||'—'}</td>
+            <td style="font-size:10.5px; color:var(--muted);">${c.createdBy||'—'}${c.createdAt? '<br>'+new Date(c.createdAt).toLocaleDateString('ar-EG') : ''}</td>
             <td><button class="btn danger small" data-delssi="${c.id}">حذف</button></td>
-          </tr>`).join('') : `<tr><td colspan="9" style="color:var(--muted);">لا توجد حالات SSI مسجّلة بعد</td></tr>`}</tbody>
+          </tr>`).join('') : `<tr><td colspan="10" style="color:var(--muted);">لا توجد حالات SSI مسجّلة بعد</td></tr>`}</tbody>
       </table>
       </div>
       <h2 style="font-size:14px;">➕ إضافة حالة SSI جديدة</h2>
@@ -922,6 +924,8 @@ function viewSurgery(){
     c.resistance = document.getElementById('sResist').value;
     c.classification = document.getElementById('sClass').value;
     if(!c.patientName){ showToast('من فضلك أدخل اسم المريض على الأقل'); return; }
+    c.createdBy = currentUser?.email || 'غير معروف';
+    c.createdAt = new Date().toISOString();
     state.ssiCases.push(c);
     queueSave(); showToast('تمت إضافة الحالة'); viewSurgery();
   });
@@ -967,6 +971,7 @@ function viewCaseLog(){
       <td>${c.organism||'—'}</td>
       <td>${c.resistance||'—'}</td>
       <td>${c.outcome||'—'}</td>
+      <td style="font-size:10.5px; color:var(--muted);">${c.createdBy||'—'}${c.createdAt? '<br>'+new Date(c.createdAt).toLocaleDateString('ar-EG') : ''}</td>
       <td><button class="btn danger small" data-del="${c.id}">حذف</button></td>
     </tr>`).join('');
 
@@ -982,9 +987,9 @@ function viewCaseLog(){
       <table class="wide">
         <thead><tr>
           <th>اسم المريض</th><th>الرقم الطبي</th><th>تاريخ الدخول</th><th>الجهاز</th>
-          <th>نوع العدوى</th><th>تاريخ ظهور العدوى</th><th>الميكروب</th><th>نمط المقاومة</th><th>الحالة عند الخروج</th><th></th>
+          <th>نوع العدوى</th><th>تاريخ ظهور العدوى</th><th>الميكروب</th><th>نمط المقاومة</th><th>الحالة عند الخروج</th><th>أُضيفت بواسطة</th><th></th>
         </tr></thead>
-        <tbody>${rows.length? rows : `<tr><td colspan="10" style="color:var(--muted);">لا توجد حالات مسجّلة بعد في ${deptLabel}</td></tr>`}</tbody>
+        <tbody>${rows.length? rows : `<tr><td colspan="11" style="color:var(--muted);">لا توجد حالات مسجّلة بعد في ${deptLabel}</td></tr>`}</tbody>
       </table>
       </div>
 
@@ -1026,6 +1031,8 @@ function viewCaseLog(){
     c.resistance = document.getElementById('ncResist').value;
     c.outcome = document.getElementById('ncOutcome').value;
     if(!c.patientName){ showToast('من فضلك أدخل اسم المريض على الأقل'); return; }
+    c.createdBy = currentUser?.email || 'غير معروف';
+    c.createdAt = new Date().toISOString();
     state.infectionCases.push(c);
     queueSave(); showToast('تمت إضافة الحالة'); viewCaseLog();
   });
@@ -1218,15 +1225,15 @@ function exportToExcel(customState){
   // --- سرد حالات العدوى (ICU + NICU) ---
   ['icu','nicu'].forEach(dept=>{
     const cases = state.infectionCases.filter(c=>c.dept===dept);
-    const head = ['اسم المريض','الرقم الطبي','تاريخ الدخول','الجهاز','نوع العدوى','تاريخ ظهور العدوى','الميكروب','نمط المقاومة','الحالة عند الخروج'];
-    const rows = cases.map(c=>[c.patientName,c.medicalRecord,c.admissionDate,c.device,c.infectionType,c.onsetDate,c.organism,c.resistance,c.outcome]);
+    const head = ['اسم المريض','الرقم الطبي','تاريخ الدخول','الجهاز','نوع العدوى','تاريخ ظهور العدوى','الميكروب','نمط المقاومة','الحالة عند الخروج','أُضيفت بواسطة','تاريخ الإضافة'];
+    const rows = cases.map(c=>[c.patientName,c.medicalRecord,c.admissionDate,c.device,c.infectionType,c.onsetDate,c.organism,c.resistance,c.outcome,c.createdBy||'',c.createdAt? new Date(c.createdAt).toLocaleString('ar-EG') : '']);
     const sheetName = dept==='icu' ? 'أقسام الرعايات المركزة' : 'الرعاية المركزة لحديثى الولادة';
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([head, ...rows]), sheetName);
   });
 
   // --- سرد حالات SSI بالاسم ---
-  const ssiListHead = ['اسم المريض','رقم الملف','تاريخ العملية','نوع العملية','اسم الجراح','الميكروب','نمط المقاومة','تصنيف SSI'];
-  const ssiListRows = state.ssiCases.map(c=>[c.patientName,c.fileNumber,c.surgeryDate,c.opType,c.surgeon,c.organism,c.resistance,c.classification]);
+  const ssiListHead = ['اسم المريض','رقم الملف','تاريخ العملية','نوع العملية','اسم الجراح','الميكروب','نمط المقاومة','تصنيف SSI','أُضيفت بواسطة','تاريخ الإضافة'];
+  const ssiListRows = state.ssiCases.map(c=>[c.patientName,c.fileNumber,c.surgeryDate,c.opType,c.surgeon,c.organism,c.resistance,c.classification,c.createdBy||'',c.createdAt? new Date(c.createdAt).toLocaleString('ar-EG') : '']);
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([ssiListHead, ...ssiListRows]), 'سرد حالات SSI');
 
   const fname = `HAI_${(state.facility.name||'المنشأة').replace(/[^\u0600-\u06FFa-zA-Z0-9]/g,'_')}_${period}.xlsx`;
