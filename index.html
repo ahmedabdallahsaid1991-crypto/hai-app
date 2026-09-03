@@ -264,6 +264,25 @@ function defaultSurgeryCensus(){
   return obj;
 }
 
+const ABX_DEPTS = [
+  {id:'nicu', label:'الحضانة'},
+  {id:'internal', label:'الداخلي'},
+  {id:'icu', label:'العناية المركزة'},
+  {id:'intermediate', label:'الرعاية الوسطية'},
+];
+
+function emptyAbxDay(day){
+  return { day, patients:null, prescriptions:null, group1:null, group2:null, group3:null };
+}
+
+function defaultAbxCensus(){
+  const obj = {};
+  ABX_DEPTS.forEach(d=>{
+    obj[d.id] = Array.from({length:31}, (_,i)=>emptyAbxDay(i+1));
+  });
+  return obj;
+}
+
 const ORGANISMS = ['Staphylococcus aureus','MRSA','Coagulase-negative Staphylococci','Enterococcus spp.','VRE',
   'E. coli','Klebsiella spp.','Pseudomonas aeruginosa','Acinetobacter spp.','Candida spp.','أخرى','غير معروف'];
 const RESISTANCE = ['لا يوجد','MDR','XDR','PDR','ESBL','CRE','غير معروف'];
@@ -291,6 +310,7 @@ function defaultState(){
     nicuCensus: defaultNicuCensus(),
     depts: DEPT_META.map(emptyDept),
     surgeryCensus: defaultSurgeryCensus(),
+    abxCensus: defaultAbxCensus(),
     infectionCases: [],
     ssiCases: [],
     previous:{ cauti:'', clabsi:'', vap:'' },
@@ -307,12 +327,14 @@ let state = defaultState();
 let saveTimer=null;
 let db = null;
 let suppressNextSnapshot = false;
+let unsubscribeSnapshot = null;
 
 function initFirebase(){
   db = window.__firestoreDb;
-  if(!db) return;
+  if(!db || !targetUid) return;
+  if(unsubscribeSnapshot){ unsubscribeSnapshot(); unsubscribeSnapshot=null; }
   const { doc, onSnapshot } = window.__firestoreFns;
-  onSnapshot(doc(db,'hai','state'), (snap)=>{
+  unsubscribeSnapshot = onSnapshot(doc(db,'hospitals',targetUid), (snap)=>{
     if(suppressNextSnapshot){ suppressNextSnapshot=false; return; }
     if(snap.exists()){
       const loaded = snap.data();
@@ -320,14 +342,25 @@ function initFirebase(){
       if(!state.depts || state.depts.length!==4){ state.depts = DEPT_META.map(emptyDept); }
       if(!state.nicuCensus){ state.nicuCensus = defaultNicuCensus(); }
       if(!state.surgeryCensus){ state.surgeryCensus = defaultSurgeryCensus(); }
+      if(!state.abxCensus){ state.abxCensus = defaultAbxCensus(); }
       if(!state.infectionCases){ state.infectionCases = []; }
       if(!state.ssiCases){ state.ssiCases = []; }
+    } else {
+      state = defaultState();
     }
     renderAll();
-    document.getElementById('saveStatus').textContent = 'متصل ومتزامن';
+    const status = document.getElementById('saveStatus');
+    if(status) status.textContent = 'متصل ومتزامن';
   }, (err)=>{
-    document.getElementById('saveStatus').textContent = 'تعذّر الاتصال بقاعدة البيانات';
+    const status = document.getElementById('saveStatus');
+    if(status) status.textContent = 'تعذّر الاتصال بقاعدة البيانات';
   });
+}
+
+// Admin uses this to switch which hospital's data is being viewed/edited
+function switchTargetHospital(uid){
+  targetUid = uid;
+  initFirebase();
 }
 
 async function loadState(){
@@ -336,21 +369,23 @@ async function loadState(){
 }
 
 function queueSave(){
-  document.getElementById('saveStatus').textContent = 'جارِ الحفظ...';
+  const status = document.getElementById('saveStatus');
+  if(status) status.textContent = 'جارِ الحفظ...';
   clearTimeout(saveTimer);
   saveTimer = setTimeout(saveState, 500);
 }
 
 async function saveState(){
-  if(!db){ document.getElementById('saveStatus').textContent = 'غير متصل'; return; }
+  const status = document.getElementById('saveStatus');
+  if(!db || !targetUid){ if(status) status.textContent = 'غير متصل'; return; }
   try{
     state.lastSaved = new Date().toISOString();
     const { doc, setDoc } = window.__firestoreFns;
     suppressNextSnapshot = true;   // avoid re-rendering from our own write
-    await setDoc(doc(db,'hai','state'), state);
-    document.getElementById('saveStatus').textContent = 'تم الحفظ · ' + new Date().toLocaleTimeString('ar-EG',{hour:'2-digit',minute:'2-digit'});
+    await setDoc(doc(db,'hospitals',targetUid), state);
+    if(status) status.textContent = 'تم الحفظ · ' + new Date().toLocaleTimeString('ar-EG',{hour:'2-digit',minute:'2-digit'});
   }catch(e){
-    document.getElementById('saveStatus').textContent = 'تعذّر الحفظ';
+    if(status) status.textContent = 'تعذّر الحفظ';
   }
 }
 
@@ -472,6 +507,25 @@ function ssiRate(){
   return { cases, operations, rate: rate(cases, operations, 100) };
 }
 
+function abxTotals(deptId){
+  const t = {patients:0, prescriptions:0, group1:0, group2:0, group3:0};
+  (state.abxCensus[deptId]||[]).forEach(d=>{
+    t.patients += num(d.patients); t.prescriptions += num(d.prescriptions);
+    t.group1 += num(d.group1); t.group2 += num(d.group2); t.group3 += num(d.group3);
+  });
+  return t;
+}
+
+function abxHospitalWide(){
+  const totals = ABX_DEPTS.reduce((acc,d)=>{
+    const t = abxTotals(d.id);
+    acc.prescriptions += t.prescriptions; acc.group1 += t.group1;
+    acc.group2 += t.group2; acc.group3 += t.group3;
+    return acc;
+  }, {prescriptions:0, group1:0, group2:0, group3:0});
+  return { ...totals, accessRate: rate(totals.group1, totals.prescriptions, 100) };
+}
+
 function allAlerts(){
   const list=[];
   [0,1,2,3].forEach(i=>{
@@ -495,14 +549,17 @@ const PAGES = [
   {id:'hap',       icon:'🫁', label:'HAP & VAP', desc:'الالتهاب الرئوي وجهاز التنفس الصناعي'},
   {id:'surgery',   icon:'🔪', label:'العمليات الجراحية (SSI)', desc:'سجل يومي لكل أنواع العمليات المرصودة + حالات ومعدلات SSI لكل نوع'},
   {id:'caseLog',   icon:'🧫', label:'سجل حالات العدوى', desc:'بيانات كل حالة عدوى بالاسم — العناية المركزة والحضانة (السرد الخطي)'},
+  {id:'abx',       icon:'💊', label:'متابعة المضادات الحيوية', desc:'سجل يومي لاستخدام المضادات الحيوية حسب القسم'},
   {id:'archive',   icon:'🗄️', label:'الأرشيف الشهري', desc:'سجل ثابت لكل الشهور المقفولة — للاطلاع والتنزيل فقط'},
+  {id:'admin',     icon:'🛡️', label:'لوحة المشرف', desc:'الموافقة على حسابات المنشآت والاطلاع على بيانات أي منشأة', adminOnly:true},
   {id:'settings',  icon:'⚙️', label:'بيانات المنشأة والتعريفات', desc:'بيانات الغلاف، التعريفات، ودليل المعادلات'},
 ];
 let currentPage = 'dashboard';
 
 function renderNav(){
   const nav = document.getElementById('nav');
-  nav.innerHTML = PAGES.map(p=>`
+  const visible = PAGES.filter(p=> !p.adminOnly || isAdminUser);
+  nav.innerHTML = visible.map(p=>`
     <button data-page="${p.id}" class="${p.id===currentPage?'active':''}">
       <span class="ic">${p.icon}</span><span>${p.label}</span>
     </button>`).join('');
@@ -515,7 +572,8 @@ function renderHead(){
   const p = PAGES.find(x=>x.id===currentPage);
   document.getElementById('pageTitle').textContent = p.label;
   document.getElementById('pageDesc').textContent = p.desc;
-  document.getElementById('chipFacility').textContent = state.facility.name || 'اسم المنشأة غير مُدخل';
+  const adminBadge = isAdminUser ? '🛡️ عرض كمشرف — ' : '';
+  document.getElementById('chipFacility').textContent = adminBadge + (state.facility.name || 'اسم المنشأة غير مُدخل');
   document.getElementById('chipPeriod').textContent = (state.facility.dept? state.facility.dept+' · ':'') + (state.facility.period||'—');
   const b1 = document.getElementById('btnLogoutTop');
   const b2 = document.getElementById('btnLogoutSidebar');
@@ -585,8 +643,23 @@ function viewDashboard(){
     <div class="note">ملاحظة: "غير المرتبطة بالجهاز" = إجمالي الحالات ناقص الحالات المرتبطة بالجهاز (مثال: BSI غير المرتبطة = إجمالي BSI − CLABSI).</div>
   </div>`;
 
+  const hw = abxHospitalWide();
+  const accessStateClass = hw.accessRate===null ? '' : (hw.accessRate>=60 ? 'state-good' : 'state-alert');
   html += `<div class="card section">
-    <h2>ثالثاً: تحديث بيانات الشهر السابق (لحساب الاتجاه) <span class="tag">اختياري</span></h2>
+    <h2>ثالثاً: متابعة استخدام المضادات الحيوية <span class="tag">المستشفى ككل</span></h2>
+    <div class="grid kpi">
+      ${kpiCard('إجمالي وصفات المضادات', hw.prescriptions, 'وصفة (كل الأقسام)')}
+      ${kpiCard('وصفات فئة الإتاحة (Access)', hw.group1, 'وصفة')}
+      <div class="card kpi-card ${accessStateClass}">
+        <div class="label">نسبة استخدام فئة الإتاحة (Access)</div>
+        <div class="value">${fmt(hw.accessRate)}%</div>
+        <div class="unit">الهدف الموصى به من WHO: 60% أو أكثر</div>
+      </div>
+    </div>
+  </div>`;
+
+  html += `<div class="card section">
+    <h2>رابعاً: تحديث بيانات الشهر السابق (لحساب الاتجاه) <span class="tag">اختياري</span></h2>
     <div class="row3">
       <div class="field"><label>حالات CAUTI — الشهر السابق</label><input type="number" min="0" id="prevCauti" value="${state.previous.cauti}"></div>
       <div class="field"><label>حالات CLABSI — الشهر السابق</label><input type="number" min="0" id="prevClabsi" value="${state.previous.clabsi}"></div>
@@ -684,10 +757,10 @@ function viewNicuCensus(){
 
   document.getElementById('view').innerHTML = `
     <div class="grid kpi" style="margin-bottom:18px;">
-      ${kpiCard('إجمالي أيام المرضى (كل الفئات)', combined.pts, 'يوم مريض')}
-      ${kpiCard('إجمالي أيام القسطرة المركزية', combined.cl, 'يوم')}
-      ${kpiCard('إجمالي أيام القسطرة البولية', combined.uc, 'يوم')}
-      ${kpiCard('إجمالي أيام جهاز التنفس', combined.mv, 'يوم')}
+      ${kpiCard('إجمالي أيام المرضى (كل الفئات)', combined.pts, 'يوم مريض').replace('<div class="value">', `<div class="value" id="kpiNicuPts">`)}
+      ${kpiCard('إجمالي أيام القسطرة المركزية', combined.cl, 'يوم').replace('<div class="value">', `<div class="value" id="kpiNicuCl">`)}
+      ${kpiCard('إجمالي أيام القسطرة البولية', combined.uc, 'يوم').replace('<div class="value">', `<div class="value" id="kpiNicuUc">`)}
+      ${kpiCard('إجمالي أيام جهاز التنفس', combined.mv, 'يوم').replace('<div class="value">', `<div class="value" id="kpiNicuMv">`)}
     </div>
 
     <div class="card section">
@@ -695,7 +768,7 @@ function viewNicuCensus(){
       <div style="overflow:auto;">
       <table>
         <thead><tr><th>فئة الوزن</th><th>Pts (أيام مرضى)</th><th>U/C (أيام قسطرة بولية)</th><th>CL (أيام قسطرة مركزية)</th><th>MV (أيام جهاز تنفس)</th></tr></thead>
-        <tbody>${summaryRows}</tbody>
+        <tbody id="nicuSummaryBody">${summaryRows}</tbody>
       </table>
       </div>
     </div>
@@ -722,12 +795,31 @@ function viewNicuCensus(){
       const i = +inp.dataset.i, f = inp.dataset.f;
       state.nicuCensus[currentNicuWeight][i][f] = inp.value===''? null : inp.value;
       queueSave();
+
+      // live-update: daily-table footer for the active weight category
       const t = nicuCensusTotalsByWeight(currentNicuWeight);
       const totalsRow = document.querySelector('#view tfoot tr');
       totalsRow.children[1].textContent = t.pts;
       totalsRow.children[2].textContent = t.uc;
       totalsRow.children[3].textContent = t.cl;
       totalsRow.children[4].textContent = t.mv;
+
+      // live-update: the matching row in the "ملخص فئات الوزن" summary table
+      const rowIndex = WEIGHT_CATS.findIndex(w=>w.id===currentNicuWeight);
+      const summaryRow = document.querySelectorAll('#nicuSummaryBody tr')[rowIndex];
+      if(summaryRow){
+        summaryRow.children[1].textContent = t.pts;
+        summaryRow.children[2].textContent = t.uc;
+        summaryRow.children[3].textContent = t.cl;
+        summaryRow.children[4].textContent = t.mv;
+      }
+
+      // live-update: the 4 top KPI cards (combined across all weight categories)
+      const c = nicuCensusTotals();
+      document.getElementById('kpiNicuPts').textContent = c.pts;
+      document.getElementById('kpiNicuCl').textContent = c.cl;
+      document.getElementById('kpiNicuUc').textContent = c.uc;
+      document.getElementById('kpiNicuMv').textContent = c.mv;
     });
   });
 }
@@ -1039,6 +1131,114 @@ function viewCaseLog(){
 }
 
 /* ============================================================
+   VIEW: ANTIBIOTIC STEWARDSHIP MONITORING (by department)
+   ============================================================ */
+let currentAbxDept = 'nicu';
+
+function viewAbx(){
+  const allTotals = ABX_DEPTS.map(d=>({...d, t: abxTotals(d.id)}));
+  const summaryRows = allTotals.map(d=>`
+    <tr>
+      <td>${d.label}</td><td>${d.t.patients}</td><td>${d.t.prescriptions}</td>
+      <td>${d.t.group1}</td><td>${d.t.group2}</td><td>${d.t.group3}</td>
+    </tr>`).join('');
+
+  const tabs = ABX_DEPTS.map(d=>`
+    <button class="btn ${d.id===currentAbxDept?'':'ghost'} small" data-dept="${d.id}" style="margin-left:6px; margin-bottom:6px;">${d.label}</button>
+  `).join('');
+
+  const days = state.abxCensus[currentAbxDept];
+  const rows = days.map((d,i)=>`
+    <tr>
+      <td>${d.day}</td>
+      <td><input type="number" min="0" data-i="${i}" data-f="patients" value="${d.patients??''}"></td>
+      <td><input type="number" min="0" data-i="${i}" data-f="prescriptions" value="${d.prescriptions??''}"></td>
+      <td><input type="number" min="0" data-i="${i}" data-f="group1" value="${d.group1??''}"></td>
+      <td><input type="number" min="0" data-i="${i}" data-f="group2" value="${d.group2??''}"></td>
+      <td><input type="number" min="0" data-i="${i}" data-f="group3" value="${d.group3??''}"></td>
+    </tr>`).join('');
+  const t = abxTotals(currentAbxDept);
+  const hw = abxHospitalWide();
+  const accessStateClass = hw.accessRate===null ? '' : (hw.accessRate>=60 ? 'state-good' : 'state-alert');
+
+  document.getElementById('view').innerHTML = `
+    <div class="grid kpi" style="margin-bottom:18px;">
+      ${kpiCard('إجمالي وصفات المضادات (المستشفى ككل)', hw.prescriptions, 'وصفة').replace('<div class="value">', `<div class="value" id="kpiAbxTotal">`)}
+      ${kpiCard('وصفات فئة الإتاحة (Access)', hw.group1, 'وصفة').replace('<div class="value">', `<div class="value" id="kpiAbxAccess">`)}
+      <div class="card kpi-card ${accessStateClass}" id="kpiAbxRateCard">
+        <div class="label">نسبة استخدام فئة الإتاحة (Access) للمستشفى ككل</div>
+        <div class="value" id="kpiAbxRate">${fmt(hw.accessRate)}%</div>
+        <div class="unit">الهدف الموصى به من WHO: 60% أو أكثر</div>
+      </div>
+    </div>
+
+    <div class="card section">
+      <h2>ملخص الأقسام <span class="tag">تلقائي</span></h2>
+      <div style="overflow:auto;">
+      <table>
+        <thead><tr><th>القسم</th><th>إجمالي المرضى</th><th>إجمالي الوصفات</th><th>الإتاحة (Access)</th><th>المراقبة (Watch)</th><th>الاحتياطي (Reserve)</th></tr></thead>
+        <tbody id="abxSummaryBody">${summaryRows}</tbody>
+      </table>
+      </div>
+      <div class="note">التصنيف حسب معايير منظمة الصحة العالمية (WHO AWaRe): الإتاحة (Access) — خط أول آمن وموصى به، المراقبة (Watch) — احتمال مقاومة أعلى، الاحتياطي (Reserve) — يُستخدم للحالات المقاومة فقط.</div>
+    </div>
+
+    <div class="card section">
+      <h2>💊 السجل اليومي حسب القسم <span class="tag">31 يوم</span></h2>
+      <div style="margin-bottom:10px;">${tabs}</div>
+      <div style="max-height:460px; overflow:auto; border:1px solid var(--border); border-radius:8px;">
+      <table class="wide">
+        <thead><tr><th>اليوم</th><th>عدد المرضى</th><th>عدد وصفات المضادات</th><th>الإتاحة (Access)</th><th>المراقبة (Watch)</th><th>الاحتياطي (Reserve)</th></tr></thead>
+        <tbody>${rows}</tbody>
+        <tfoot><tr style="font-weight:800; background:var(--teal-light);">
+          <td>الإجمالي</td><td>${t.patients}</td><td>${t.prescriptions}</td><td>${t.group1}</td><td>${t.group2}</td><td>${t.group3}</td>
+        </tr></tfoot>
+      </table>
+      </div>
+    </div>`;
+
+  document.getElementById('view').querySelectorAll('button[data-dept]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{ currentAbxDept = btn.dataset.dept; viewAbx(); });
+  });
+  document.getElementById('view').querySelectorAll('input').forEach(inp=>{
+    inp.addEventListener('input', ()=>{
+      const i = +inp.dataset.i, f = inp.dataset.f;
+      state.abxCensus[currentAbxDept][i][f] = inp.value===''? null : inp.value;
+      queueSave();
+
+      // live-update: daily-table footer for the active department
+      const tt = abxTotals(currentAbxDept);
+      const totalsRow = document.querySelector('#view tfoot tr');
+      totalsRow.children[1].textContent = tt.patients;
+      totalsRow.children[2].textContent = tt.prescriptions;
+      totalsRow.children[3].textContent = tt.group1;
+      totalsRow.children[4].textContent = tt.group2;
+      totalsRow.children[5].textContent = tt.group3;
+
+      // live-update: the matching row in "ملخص الأقسام"
+      const rowIndex = ABX_DEPTS.findIndex(d=>d.id===currentAbxDept);
+      const summaryRow = document.querySelectorAll('#abxSummaryBody tr')[rowIndex];
+      if(summaryRow){
+        summaryRow.children[1].textContent = tt.patients;
+        summaryRow.children[2].textContent = tt.prescriptions;
+        summaryRow.children[3].textContent = tt.group1;
+        summaryRow.children[4].textContent = tt.group2;
+        summaryRow.children[5].textContent = tt.group3;
+      }
+
+      // live-update: hospital-wide KPI cards, including the Access-rate color state
+      const nhw = abxHospitalWide();
+      document.getElementById('kpiAbxTotal').textContent = nhw.prescriptions;
+      document.getElementById('kpiAbxAccess').textContent = nhw.group1;
+      document.getElementById('kpiAbxRate').textContent = fmt(nhw.accessRate) + '%';
+      const rateCard = document.getElementById('kpiAbxRateCard');
+      rateCard.classList.remove('state-good','state-alert');
+      if(nhw.accessRate!==null) rateCard.classList.add(nhw.accessRate>=60 ? 'state-good' : 'state-alert');
+    });
+  });
+}
+
+/* ============================================================
    VIEW: SETTINGS (الغلاف + التعريفات + دليل المعادلات)
    ============================================================ */
 function viewSettings(){
@@ -1236,6 +1436,25 @@ function exportToExcel(customState){
   const ssiListRows = state.ssiCases.map(c=>[c.patientName,c.fileNumber,c.surgeryDate,c.opType,c.surgeon,c.organism,c.resistance,c.classification,c.createdBy||'',c.createdAt? new Date(c.createdAt).toLocaleString('ar-EG') : '']);
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([ssiListHead, ...ssiListRows]), 'سرد حالات SSI');
 
+  // --- متابعة المضادات الحيوية (كل الأقسام جنب بعض) ---
+  const abxHead = ['اليوم'];
+  ABX_DEPTS.forEach(d=> abxHead.push(`${d.label} - المرضى`, `${d.label} - الوصفات`, `${d.label} - مج1`, `${d.label} - مج2`, `${d.label} - مج3`));
+  const abxRows = Array.from({length:31}, (_,i)=>{
+    const row = [i+1];
+    ABX_DEPTS.forEach(d=>{
+      const day = state.abxCensus[d.id][i];
+      row.push(day.patients??'', day.prescriptions??'', day.group1??'', day.group2??'', day.group3??'');
+    });
+    return row;
+  });
+  const abxTotalsRow = ['الإجمالي'];
+  ABX_DEPTS.forEach(d=>{
+    const t = abxTotals(d.id);
+    abxTotalsRow.push(t.patients, t.prescriptions, t.group1, t.group2, t.group3);
+  });
+  abxRows.push(abxTotalsRow);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([abxHead, ...abxRows]), 'متابعة المضادات الحيوية');
+
   const fname = `HAI_${(state.facility.name||'المنشأة').replace(/[^\u0600-\u06FFa-zA-Z0-9]/g,'_')}_${period}.xlsx`;
   XLSX.writeFile(wb, fname);
   showToast('تم تنزيل ملف Excel');
@@ -1248,31 +1467,109 @@ function exportToExcel(customState){
    ARCHIVE (immutable — write-once, never editable or deletable)
    ============================================================ */
 async function archiveCurrentMonth(){
-  if(!db){ showToast('غير متصل بقاعدة البيانات — لم يُحفظ في الأرشيف'); return; }
+  if(!db || !targetUid){ showToast('غير متصل بقاعدة البيانات — لم يُحفظ في الأرشيف'); return; }
   try{
     const { doc, setDoc } = window.__firestoreFns;
     const closedAt = new Date();
     const id = closedAt.toISOString().replace(/[:.]/g,'-');
-    const t = computeTotals(); const ssi = ssiRate();
+    const t = computeTotals(); const ssi = ssiRate(); const nicu = nicuCensusTotals(); const hw = abxHospitalWide();
     const record = {
       closedAt: closedAt.toISOString(),
       period: state.facility.period || '',
       facilityName: state.facility.name || '',
-      summary: { cauti:t.cauti, clabsi:t.clabsi, vap:t.vap, ssi:ssi.cases, operations:ssi.operations },
+      summary: {
+        cauti:t.cauti, clabsi:t.clabsi, vap:t.vap, ssi:ssi.cases, operations:ssi.operations,
+        nicuPatientDays: nicu.pts,
+        abxPrescriptions: hw.prescriptions, abxAccessRate: hw.accessRate,
+        casesLogged: state.infectionCases.length, ssiCasesLogged: state.ssiCases.length
+      },
       snapshot: JSON.parse(JSON.stringify(state))
     };
-    await setDoc(doc(db,'hai_archive', id), record);
+    await setDoc(doc(db,'hospitals',targetUid,'archive', id), record);
   }catch(e){
-    showToast('تعذّر الحفظ في الأرشيف (تأكد من ضبط صلاحيات hai_archive)');
+    showToast('تعذّر الحفظ في الأرشيف');
   }
+}
+
+/* ============================================================
+   VIEW: ADMIN PANEL (admin-only — approve accounts, view any hospital)
+   ============================================================ */
+async function viewAdmin(){
+  await loadAdminUsersList();
+  const pending = adminUsersList.filter(u=>!u.approved);
+  const approved = adminUsersList.filter(u=>u.approved);
+
+  const rowHtml = (u, showApproveBtn)=>`
+    <tr>
+      <td>${u.hospitalName||'—'}</td>
+      <td>${u.email||'—'}</td>
+      <td>${u.createdAt? new Date(u.createdAt).toLocaleDateString('ar-EG') : '—'}</td>
+      <td>
+        ${showApproveBtn ? `<button class="btn small" data-approve="${u.uid}">✓ موافقة</button>
+          <button class="btn danger small" data-reject="${u.uid}">✕ رفض</button>`
+          : `<button class="btn ghost small" data-view="${u.uid}">${targetUid===u.uid?'👁 معروض الآن':'عرض البيانات'}</button>
+             <button class="btn danger small" data-revoke="${u.uid}">إلغاء الموافقة</button>`}
+      </td>
+    </tr>`;
+
+  document.getElementById('view').innerHTML = `
+    <div class="card section">
+      <h2>⏳ طلبات بانتظار الموافقة <span class="tag">${pending.length}</span></h2>
+      <div style="overflow:auto;">
+      <table>
+        <thead><tr><th>اسم المنشأة</th><th>البريد الإلكتروني</th><th>تاريخ الطلب</th><th></th></tr></thead>
+        <tbody>${pending.length? pending.map(u=>rowHtml(u,true)).join('') : `<tr><td colspan="4" style="color:var(--muted);">لا توجد طلبات معلّقة</td></tr>`}</tbody>
+      </table>
+      </div>
+    </div>
+
+    <div class="card section">
+      <h2>🏥 المنشآت المفعّلة <span class="tag">${approved.length}</span></h2>
+      <div style="overflow:auto;">
+      <table>
+        <thead><tr><th>اسم المنشأة</th><th>البريد الإلكتروني</th><th>تاريخ التفعيل</th><th></th></tr></thead>
+        <tbody>${approved.length? approved.map(u=>rowHtml(u,false)).join('') : `<tr><td colspan="4" style="color:var(--muted);">لا توجد منشآت مفعّلة بعد</td></tr>`}</tbody>
+      </table>
+      </div>
+      <div class="note">"عرض البيانات" بينقلك تشوف وتعدّل بيانات المنشأة دي في كل الصفحات (لوحة المتابعة، السجلات...) بدل بياناتك. ارجع تاني وادوس "عرض البيانات" بتاعة أي منشأة تانية وقت ما تحب.</div>
+    </div>`;
+
+  document.getElementById('view').querySelectorAll('button[data-approve]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const { doc, updateDoc } = window.__firestoreFns;
+      await updateDoc(doc(db,'users',btn.dataset.approve), { approved:true });
+      showToast('تمت الموافقة على الحساب'); viewAdmin();
+    });
+  });
+  document.getElementById('view').querySelectorAll('button[data-reject]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      if(!confirm('هل تريد رفض هذا الطلب؟ لن يُحذف الحساب لكنه سيبقى غير مفعّل.')) return;
+      showToast('تم الرفض — الحساب يبقى غير مفعّل'); viewAdmin();
+    });
+  });
+  document.getElementById('view').querySelectorAll('button[data-view]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      switchTargetHospital(btn.dataset.view);
+      showToast('بتعرض بيانات: ' + (adminUsersList.find(u=>u.uid===btn.dataset.view)?.hospitalName||''));
+      currentPage='dashboard'; renderAll();
+    });
+  });
+  document.getElementById('view').querySelectorAll('button[data-revoke]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      if(!confirm('هل تريد إلغاء موافقة هذه المنشأة؟ لن يقدروا يدخلوا تاني.')) return;
+      const { doc, updateDoc } = window.__firestoreFns;
+      await updateDoc(doc(db,'users',btn.dataset.revoke), { approved:false });
+      showToast('تم إلغاء الموافقة'); viewAdmin();
+    });
+  });
 }
 
 async function viewArchive(){
   document.getElementById('view').innerHTML = `<div class="card section"><h2>الأرشيف الشهري</h2><p style="font-size:13px; color:var(--muted);">جارِ التحميل...</p></div>`;
-  if(!db){ document.getElementById('view').innerHTML = `<div class="card section"><h2>الأرشيف الشهري</h2><p>غير متصل بقاعدة البيانات.</p></div>`; return; }
+  if(!db || !targetUid){ document.getElementById('view').innerHTML = `<div class="card section"><h2>الأرشيف الشهري</h2><p>غير متصل بقاعدة البيانات.</p></div>`; return; }
   try{
     const { collection, getDocs } = window.__firestoreFns;
-    const snap = await getDocs(collection(db,'hai_archive'));
+    const snap = await getDocs(collection(db,'hospitals',targetUid,'archive'));
     const records = [];
     snap.forEach(d=> records.push({id:d.id, ...d.data()}));
     records.sort((a,b)=> (b.closedAt||'').localeCompare(a.closedAt||''));
@@ -1292,16 +1589,23 @@ async function viewArchive(){
         <td>${r.summary?.clabsi ?? '—'}</td>
         <td>${r.summary?.vap ?? '—'}</td>
         <td>${r.summary?.ssi ?? '—'}</td>
+        <td>${r.summary?.nicuPatientDays ?? '—'}</td>
+        <td>${r.summary?.abxPrescriptions ?? '—'}</td>
+        <td>${r.summary?.abxAccessRate!=null ? fmt(r.summary.abxAccessRate)+'%' : '—'}</td>
+        <td>${r.summary?.casesLogged ?? '—'}</td>
         <td><button class="btn small" data-id="${r.id}">⬇️ Excel</button></td>
       </tr>`).join('');
 
     document.getElementById('view').innerHTML = `
       <div class="card section">
         <h2>🗄️ الأرشيف الشهري <span class="tag">${records.length} شهر مقفول</span></h2>
-        <div class="note">كل شهر هنا سجل ثابت ونهائي — لا يمكن تعديله أو حذفه من أي مكان، حتى بعد إغلاقه.</div>
+        <div class="note">كل شهر هنا سجل ثابت ونهائي — لا يمكن تعديله أو حذفه من أي مكان، حتى بعد إغلاقه. الأعمدة الفارغة (—) تعني إن الشهر ده اتقفل قبل إضافة هذا المؤشر.</div>
         <div style="overflow:auto; margin-top:12px;">
         <table>
-          <thead><tr><th>الفترة</th><th>المنشأة</th><th>تاريخ القفل</th><th>CAUTI</th><th>CLABSI</th><th>VAP</th><th>SSI</th><th></th></tr></thead>
+          <thead><tr>
+            <th>الفترة</th><th>المنشأة</th><th>تاريخ القفل</th><th>CAUTI</th><th>CLABSI</th><th>VAP</th><th>SSI</th>
+            <th>أيام الحضانة</th><th>وصفات المضادات</th><th>نسبة الإتاحة</th><th>حالات مسجّلة بالاسم</th><th></th>
+          </tr></thead>
           <tbody>${rows}</tbody>
         </table>
         </div>
@@ -1330,39 +1634,72 @@ function renderAll(){
   else if(currentPage==='hap') viewDevice('hap');
   else if(currentPage==='surgery') viewSurgery();
   else if(currentPage==='caseLog') viewCaseLog();
+  else if(currentPage==='abx') viewAbx();
   else if(currentPage==='archive') viewArchive();
+  else if(currentPage==='admin') viewAdmin();
   else if(currentPage==='settings') viewSettings();
 }
 
 /* ============================================================
-   AUTH GATE — no real data loads until signed in
+   AUTH GATE — signup with admin approval, multi-tenant data
    ============================================================ */
-let currentUser = null;
+const ADMIN_EMAIL = 'ahmed.abdallah.said1991@gmail.com';
+let currentUser = null;   // Firebase Auth user object
+let myProfile = null;     // this user's /users/{uid} doc
+let isAdminUser = false;
+let targetUid = null;     // whose hospital data is currently loaded
+let adminUsersList = [];  // all /users docs, for the admin panel
+let authMode = 'login';   // 'login' | 'signup'
 
-function renderLogin(errorMsg){
-  document.querySelector('.app').style.display = 'none';
+function gateEl(){
   let gate = document.getElementById('authGate');
   if(!gate){
     gate = document.createElement('div');
     gate.id = 'authGate';
     document.body.appendChild(gate);
   }
+  document.querySelector('.app').style.display = 'none';
   gate.style.cssText = 'min-height:100vh; display:flex; align-items:center; justify-content:center; background:var(--cream); padding:20px;';
+  return gate;
+}
+
+function renderLogin(errorMsg){
+  const gate = gateEl();
+  const isSignup = authMode==='signup';
   gate.innerHTML = `
-    <div class="card" style="max-width:360px; width:100%;">
+    <div class="card" style="max-width:380px; width:100%;">
       <div style="text-align:center; margin-bottom:16px;">
         <div style="font-size:32px;">🏥</div>
         <h1 style="font-size:17px; color:var(--navy-deep); margin:8px 0 2px 0;">نظام ترصد عدوى المنشآت الصحية</h1>
-        <div style="font-size:12px; color:var(--muted);">سجّل الدخول للمتابعة — الوصول لأعضاء الفريق المصرَّح لهم فقط</div>
+        <div style="font-size:12px; color:var(--muted);">${isSignup? 'إنشاء حساب جديد لمنشأتك — يحتاج موافقة المشرف قبل التفعيل' : 'سجّل الدخول للمتابعة'}</div>
       </div>
+      ${isSignup? `<div class="field"><label>اسم المنشأة / المستشفى</label><input type="text" id="suHospital"></div>` : ''}
       <div class="field"><label>البريد الإلكتروني</label><input type="email" id="loginEmail"></div>
       <div class="field"><label>كلمة المرور</label><input type="password" id="loginPass"></div>
       ${errorMsg ? `<div class="alert-item" style="margin-bottom:12px;">⚠ ${errorMsg}</div>` : ''}
-      <button class="btn" id="btnLogin" style="width:100%;">تسجيل الدخول</button>
-      <div class="note" style="margin-top:14px;">لو ملكش حساب، تواصل مع مسؤول النظام لإنشاء واحد لك.</div>
+      <button class="btn" id="btnLogin" style="width:100%;">${isSignup? 'إرسال طلب الحساب' : 'تسجيل الدخول'}</button>
+      <div class="note" style="margin-top:14px; text-align:center;">
+        ${isSignup
+          ? `عندك حساب بالفعل؟ <a href="#" id="toLogin" style="color:var(--teal); font-weight:700;">تسجيل الدخول</a>`
+          : `مفيش حساب لمنشأتك؟ <a href="#" id="toSignup" style="color:var(--teal); font-weight:700;">اطلب حساب جديد</a>`}
+      </div>
     </div>`;
-  document.getElementById('btnLogin').addEventListener('click', doLogin);
-  document.getElementById('loginPass').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
+  document.getElementById('btnLogin').addEventListener('click', isSignup? doSignup : doLogin);
+  document.getElementById('loginPass').addEventListener('keydown', e=>{ if(e.key==='Enter'){ isSignup? doSignup() : doLogin(); } });
+  const toS = document.getElementById('toSignup'); if(toS) toS.addEventListener('click', (e)=>{ e.preventDefault(); authMode='signup'; renderLogin(); });
+  const toL = document.getElementById('toLogin'); if(toL) toL.addEventListener('click', (e)=>{ e.preventDefault(); authMode='login'; renderLogin(); });
+}
+
+function renderPending(msg){
+  const gate = gateEl();
+  gate.innerHTML = `
+    <div class="card" style="max-width:380px; width:100%; text-align:center;">
+      <div style="font-size:32px;">⏳</div>
+      <h1 style="font-size:16px; color:var(--navy-deep); margin:10px 0 6px 0;">بانتظار موافقة المشرف</h1>
+      <p style="font-size:13px; color:var(--muted);">${msg || 'تم استلام طلب حسابك، هيتفعّل بعد ما المشرف يوافق عليه. جرب تسجّل الدخول تاني بعد شوية.'}</p>
+      <button class="btn ghost small" id="btnPendingLogout" style="margin-top:10px;">تسجيل الخروج</button>
+    </div>`;
+  document.getElementById('btnPendingLogout').addEventListener('click', doLogout);
 }
 
 async function doLogin(){
@@ -1376,6 +1713,25 @@ async function doLogin(){
   }
 }
 
+async function doSignup(){
+  const hospital = document.getElementById('suHospital').value.trim();
+  const email = document.getElementById('loginEmail').value.trim();
+  const pass = document.getElementById('loginPass').value;
+  if(!hospital || !email || !pass){ renderLogin('من فضلك املأ كل الخانات'); return; }
+  if(pass.length < 6){ renderLogin('كلمة المرور لازم تكون 6 حروف على الأقل'); return; }
+  try{
+    const cred = await window.__authFns.createUserWithEmailAndPassword(window.__auth, email, pass);
+    const { doc, setDoc } = window.__firestoreFns;
+    await setDoc(doc(window.__firestoreDb, 'users', cred.user.uid), {
+      email, hospitalName: hospital, approved:false, role:'user', createdAt: new Date().toISOString()
+    });
+    // signOut immediately so they land on the pending screen via the normal auth flow
+    renderPending('تم إنشاء الحساب بنجاح. بانتظار موافقة المشرف على "' + hospital + '".');
+  }catch(e){
+    renderLogin(e.code==='auth/email-already-in-use' ? 'البريد الإلكتروني ده مستخدم بالفعل' : 'تعذّر إنشاء الحساب');
+  }
+}
+
 async function doLogout(){
   await window.__authFns.signOut(window.__auth);
 }
@@ -1386,15 +1742,43 @@ function showApp(){
   document.querySelector('.app').style.display = 'flex';
 }
 
-window.addEventListener('auth-state-changed', (e)=>{
+async function fetchMyProfile(uid){
+  try{
+    const { doc, getDoc } = window.__firestoreFns;
+    const snap = await getDoc(doc(window.__firestoreDb, 'users', uid));
+    return snap.exists() ? snap.data() : null;
+  }catch(e){ return null; }
+}
+
+async function loadAdminUsersList(){
+  try{
+    const { collection, getDocs } = window.__firestoreFns;
+    const snap = await getDocs(collection(window.__firestoreDb, 'users'));
+    adminUsersList = [];
+    snap.forEach(d=> adminUsersList.push({ uid:d.id, ...d.data() }));
+    adminUsersList.sort((a,b)=> (a.hospitalName||'').localeCompare(b.hospitalName||''));
+  }catch(e){ adminUsersList = []; }
+}
+
+window.addEventListener('auth-state-changed', async (e)=>{
   currentUser = e.detail.user;
-  if(currentUser){
+  if(!currentUser){ myProfile=null; isAdminUser=false; targetUid=null; renderLogin(); return; }
+
+  isAdminUser = currentUser.email === ADMIN_EMAIL;
+  targetUid = currentUser.uid;
+
+  if(isAdminUser){
+    await loadAdminUsersList();
     showApp();
-    if(window.__firestoreDb){ initFirebase(); }
-    else{ window.addEventListener('firebase-ready', initFirebase, {once:true}); }
-  }else{
-    renderLogin();
+    if(window.__firestoreDb){ initFirebase(); } else { window.addEventListener('firebase-ready', initFirebase, {once:true}); }
+    return;
   }
+
+  myProfile = await fetchMyProfile(currentUser.uid);
+  if(!myProfile){ renderPending('لم يتم العثور على بيانات حسابك. تواصل مع المشرف.'); return; }
+  if(!myProfile.approved){ renderPending(); return; }
+  showApp();
+  if(window.__firestoreDb){ initFirebase(); } else { window.addEventListener('firebase-ready', initFirebase, {once:true}); }
 });
 
 (function init(){
@@ -1405,8 +1789,8 @@ window.addEventListener('auth-state-changed', (e)=>{
 
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-  import { getFirestore, doc, setDoc, onSnapshot, collection, getDocs } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
-  import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+  import { getFirestore, doc, setDoc, getDoc, updateDoc, onSnapshot, collection, getDocs } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+  import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 
   const firebaseConfig = {
     apiKey: "AIzaSyCVHKrG7JqQ3QfJg4P5G3xTT-dnhmniZHg",
@@ -1419,10 +1803,10 @@ window.addEventListener('auth-state-changed', (e)=>{
 
   const app = initializeApp(firebaseConfig);
   window.__firestoreDb = getFirestore(app);
-  window.__firestoreFns = { doc, setDoc, onSnapshot, collection, getDocs };
+  window.__firestoreFns = { doc, setDoc, getDoc, updateDoc, onSnapshot, collection, getDocs };
 
   const auth = getAuth(app);
-  window.__authFns = { signInWithEmailAndPassword, signOut };
+  window.__authFns = { signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut };
   window.__auth = auth;
   window.dispatchEvent(new Event('firebase-ready'));
 
