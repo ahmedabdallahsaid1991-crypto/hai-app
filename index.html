@@ -305,7 +305,7 @@ function emptySsiCase(){
 
 function defaultState(){
   return {
-    facility:{ name:'مستشفى الحمام المركزي', dept:'', period:'2026', preparedBy:'فريق مكافحة العدوى\nد/ أحمد عبدالله سعيد', reviewedBy:'', approvalDate:'' },
+    facility:{ name:'', dept:'', period:'2026', preparedBy:'', reviewedBy:'', approvalDate:'' },
     census:{ days: Array.from({length:31}, (_,i)=>({day:i+1, patients:null, uc:null, tempCVC:null, permCVC:null, vent:null})) },
     nicuCensus: defaultNicuCensus(),
     depts: DEPT_META.map(emptyDept),
@@ -1725,8 +1725,7 @@ async function doSignup(){
     await setDoc(doc(window.__firestoreDb, 'users', cred.user.uid), {
       email, hospitalName: hospital, approved:false, role:'user', createdAt: new Date().toISOString()
     });
-    // signOut immediately so they land on the pending screen via the normal auth flow
-    renderPending('تم إنشاء الحساب بنجاح. بانتظار موافقة المشرف على "' + hospital + '".');
+    renderPending('تم إنشاء الحساب بنجاح. بانتظار موافقة المشرف على "' + hospital + '". بعد الموافقة، أدخل اسم المنشأة مرة واحدة من صفحة الإعدادات.');
   }catch(e){
     renderLogin(e.code==='auth/email-already-in-use' ? 'البريد الإلكتروني ده مستخدم بالفعل' : 'تعذّر إنشاء الحساب');
   }
