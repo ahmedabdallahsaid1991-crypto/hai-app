@@ -290,7 +290,9 @@ function defaultAbxCensus(){
 
 const ORGANISMS = ['Staphylococcus aureus','MRSA','Coagulase-negative Staphylococci','Enterococcus spp.','VRE',
   'E. coli','Klebsiella spp.','Pseudomonas aeruginosa','Acinetobacter spp.','Candida spp.','أخرى','غير معروف'];
-const RESISTANCE = ['لا يوجد','MDR','XDR','PDR','ESBL','CRE','غير معروف'];
+const RESISTANCE = ['لا يوجد','MDR','XDR','PDR','ESBL','CRE','MRSA','VRSA','VRE','غير معروف'];
+const GRAM_TYPES = ['gram+ve','gram-ve','Fungi'];
+const SAMPLE_TYPES = ['blood','urine','sputum','pus discharge','CSF','wound swab','أخرى'];
 const INFECTION_TYPES = ['CLABSI','CAUTI','VAP','VAE','Non-device BSI','Non-CAUTI UTI','NV-HAP','أخرى'];
 const DEVICE_TYPES = ['قسطرة مركزية (CVC)','قسطرة بولية (Foley)','جهاز تنفس صناعي (MV)','لا يوجد'];
 const OUTCOMES = ['تحسّن','تحويل','توفي','مازال بالمستشفى'];
@@ -308,6 +310,13 @@ function emptySsiCase(){
     organism:'', resistance:'', classification:'', createdBy:'', createdAt:'' };
 }
 
+function emptyLabCase(){
+  return { id: 'l'+Date.now()+Math.random().toString(36).slice(2,6),
+    patientName:'', medicalRecord:'', dept:'', admissionDate:'', cultureDate:'',
+    gram:'', genus:'', species:'', resistance:'', sampleType:'',
+    priorCulture14d:'', devices:'', riskFactors:'', createdBy:'', createdAt:'' };
+}
+
 function defaultState(){
   return {
     facility:{ name:'', dept:'', period:'2026', preparedBy:'', reviewedBy:'', approvalDate:'' },
@@ -318,6 +327,7 @@ function defaultState(){
     abxCensus: defaultAbxCensus(),
     infectionCases: [],
     ssiCases: [],
+    labCases: [],
     previous:{ cauti:'', clabsi:'', vap:'' },
     lastSaved:null
   };
@@ -350,6 +360,7 @@ function initFirebase(){
       if(!state.abxCensus){ state.abxCensus = defaultAbxCensus(); }
       if(!state.infectionCases){ state.infectionCases = []; }
       if(!state.ssiCases){ state.ssiCases = []; }
+      if(!state.labCases){ state.labCases = []; }
     } else {
       state = defaultState();
     }
@@ -531,6 +542,42 @@ function abxHospitalWide(){
   return { ...totals, accessRate: rate(totals.group1, totals.prescriptions, 100) };
 }
 
+function labSurvSummary(){
+  const cases = state.labCases;
+  const total = cases.length;
+  const isResistant = c => c.resistance && c.resistance!=='لا يوجد' && c.resistance!=='غير معروف';
+  const totalResistant = cases.filter(isResistant).length;
+  const countBy = tag => cases.filter(c=>c.resistance===tag).length;
+  const mdr = countBy('MDR'), xdr = countBy('XDR'), pdr = countBy('PDR'),
+        cre = countBy('CRE'), esbl = countBy('ESBL'), mrsa = countBy('MRSA'),
+        vre = countBy('VRE'), vrsa = countBy('VRSA');
+  const klebsiellaResistant = cases.filter(c=> isResistant(c) && (c.genus||'').toLowerCase().includes('klebsiella')).length;
+  const patientDays = computeTotals().patientDays;
+  return {
+    total, totalResistant, mdr, xdr, pdr, cre, esbl, mrsa, vre, vrsa, klebsiellaResistant, patientDays,
+    resistantRate: rate(totalResistant, patientDays, 1000),
+    klebsiellaRate: rate(klebsiellaResistant, patientDays, 1000),
+    mdrPct: rate(mdr, totalResistant, 100),
+    xdrPct: rate(xdr, totalResistant, 100),
+    pdrPct: rate(pdr, totalResistant, 100),
+  };
+}
+
+// Calendar day of illness onset (admission day = day 1), and HAI eligibility classifier.
+// Regular surveillance (ICU/NICU cases): eligible from day 3. Lab surveillance: eligible from day 4.
+function calendarDay(admitDate, eventDate){
+  if(!admitDate || !eventDate) return null;
+  const a = new Date(admitDate), e = new Date(eventDate);
+  if(isNaN(a) || isNaN(e)) return null;
+  return Math.round((e - a) / 86400000) + 1;
+}
+function classifyHAI(day, threshold){
+  if(day===null || day===undefined) return { text:'—', qualifies:null };
+  return day >= threshold
+    ? { text:'✓ عدوى مستشفيات (مؤهلة)', qualifies:true }
+    : { text:'✗ غير مؤهلة', qualifies:false };
+}
+
 function allAlerts(){
   const list=[];
   [0,1,2,3].forEach(i=>{
@@ -555,6 +602,7 @@ const PAGES = [
   {id:'surgery',   icon:'🔪', label:'العمليات الجراحية (SSI)', desc:'سجل يومي لكل أنواع العمليات المرصودة + حالات ومعدلات SSI لكل نوع'},
   {id:'caseLog',   icon:'🧫', label:'سجل حالات العدوى', desc:'بيانات كل حالة عدوى بالاسم — العناية المركزة والحضانة (السرد الخطي)'},
   {id:'abx',       icon:'💊', label:'متابعة المضادات الحيوية', desc:'سجل يومي لاستخدام المضادات الحيوية حسب القسم'},
+  {id:'labSurv',   icon:'🧪', label:'الترصد المعملي', desc:'سرد نتائج المزارع والمقاومة الميكروبية — معدل الميكروبات المقاومة'},
   {id:'archive',   icon:'🗄️', label:'الأرشيف الشهري', desc:'سجل ثابت لكل الشهور المقفولة — للاطلاع والتنزيل فقط'},
   {id:'admin',     icon:'🛡️', label:'لوحة المشرف', desc:'الموافقة على حسابات المنشآت والاطلاع على بيانات أي منشأة', adminOnly:true},
   {id:'settings',  icon:'⚙️', label:'بيانات المنشأة والتعريفات', desc:'بيانات الغلاف، التعريفات، ودليل المعادلات'},
@@ -1057,7 +1105,10 @@ function viewCaseLog(){
   const deptCases = state.infectionCases.filter(c=>c.dept===currentCaseDept);
   const deptLabel = currentCaseDept==='icu' ? 'العناية المركزة' : 'الحضانة';
 
-  const rows = deptCases.map(c=>`
+  const rows = deptCases.map(c=>{
+    const day = calendarDay(c.admissionDate, c.onsetDate);
+    const cls = classifyHAI(day, 3);
+    return `
     <tr>
       <td>${c.patientName||'—'}</td>
       <td>${c.medicalRecord||'—'}</td>
@@ -1065,16 +1116,20 @@ function viewCaseLog(){
       <td>${c.device||'—'}</td>
       <td>${c.infectionType||'—'}</td>
       <td>${c.onsetDate||'—'}</td>
+      <td>${day ?? '—'}</td>
+      <td style="${cls.qualifies===true?'color:var(--good); font-weight:700;':cls.qualifies===false?'color:var(--alert); font-weight:700;':''}">${cls.text}</td>
       <td>${c.organism||'—'}</td>
       <td>${c.resistance||'—'}</td>
       <td>${c.outcome||'—'}</td>
       <td style="font-size:10.5px; color:var(--muted);">${c.createdBy||'—'}${c.createdAt? '<br>'+new Date(c.createdAt).toLocaleDateString('ar-EG') : ''}</td>
       <td><button class="btn danger small" data-del="${c.id}">حذف</button></td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 
   document.getElementById('view').innerHTML = `
     <div class="card section">
       <h2>🧫 سجل حالات العدوى بالاسم (السرد الخطي)</h2>
+      <div class="note">تصنيف "عدوى مستشفيات" هنا يُحسب تلقائياً وفق قاعدة الترصد العادي: يوم الدخول = يوم 1، والعدوى تُحتسب مكتسبة من المستشفى من اليوم الثالث فأكثر.</div>
       <div style="margin-bottom:12px;">
         <button class="btn ${currentCaseDept==='icu'?'':'ghost'} small" id="tabIcu">العناية المركزة</button>
         <button class="btn ${currentCaseDept==='nicu'?'':'ghost'} small" id="tabNicu" style="margin-right:8px;">الحضانة</button>
@@ -1084,9 +1139,10 @@ function viewCaseLog(){
       <table class="wide">
         <thead><tr>
           <th>اسم المريض</th><th>الرقم الطبي</th><th>تاريخ الدخول</th><th>الجهاز</th>
-          <th>نوع العدوى</th><th>تاريخ ظهور العدوى</th><th>الميكروب</th><th>نمط المقاومة</th><th>الحالة عند الخروج</th><th>أُضيفت بواسطة</th><th></th>
+          <th>نوع العدوى</th><th>تاريخ ظهور العدوى</th><th>اليوم التقويمي</th><th>التصنيف</th>
+          <th>الميكروب</th><th>نمط المقاومة</th><th>الحالة عند الخروج</th><th>أُضيفت بواسطة</th><th></th>
         </tr></thead>
-        <tbody>${rows.length? rows : `<tr><td colspan="11" style="color:var(--muted);">لا توجد حالات مسجّلة بعد في ${deptLabel}</td></tr>`}</tbody>
+        <tbody>${rows.length? rows : `<tr><td colspan="13" style="color:var(--muted);">لا توجد حالات مسجّلة بعد في ${deptLabel}</td></tr>`}</tbody>
       </table>
       </div>
 
@@ -1240,6 +1296,139 @@ function viewAbx(){
       rateCard.classList.remove('state-good','state-alert');
       if(nhw.accessRate!==null) rateCard.classList.add(nhw.accessRate>=60 ? 'state-good' : 'state-alert');
     });
+  });
+}
+
+/* ============================================================
+   VIEW: LAB SURVEILLANCE (culture + resistance line-listing)
+   ============================================================ */
+function viewLabSurv(){
+  const s = labSurvSummary();
+  const rows = state.labCases.map(c=>{
+    const day = calendarDay(c.admissionDate, c.cultureDate);
+    const cls = classifyHAI(day, 4);
+    return `
+    <tr>
+      <td>${c.patientName||'—'}</td><td>${c.medicalRecord||'—'}</td><td>${c.dept||'—'}</td>
+      <td>${c.cultureDate||'—'}</td><td>${day ?? '—'}</td>
+      <td style="${cls.qualifies===true?'color:var(--good); font-weight:700;':cls.qualifies===false?'color:var(--alert); font-weight:700;':''}">${cls.text}</td>
+      <td>${c.gram||'—'}</td><td>${c.genus||'—'}</td>
+      <td>${c.resistance||'—'}</td><td>${c.sampleType||'—'}</td>
+      <td style="font-size:10.5px; color:var(--muted);">${c.createdBy||'—'}</td>
+      <td><button class="btn danger small" data-dellab="${c.id}">حذف</button></td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('view').innerHTML = `
+    <div class="grid kpi" style="margin-bottom:18px;">
+      ${kpiCard('إجمالي المزارع الإيجابية', s.total, 'مزرعة')}
+      ${kpiCard('إجمالي العينات المقاومة', s.totalResistant, 'أي نمط مقاومة')}
+      ${kpiCard('معدل الميكروبات المقاومة', fmt(s.resistantRate), 'لكل 1000 يوم إقامة')}
+    </div>
+
+    <div class="card section">
+      <h2>ملخص أنماط المقاومة <span class="tag">تلقائي</span></h2>
+      <div class="grid kpi">
+        ${kpiCard('MDR', s.mdr, fmt(s.mdrPct)+'% من إجمالي المقاوم')}
+        ${kpiCard('XDR', s.xdr, fmt(s.xdrPct)+'% من إجمالي المقاوم')}
+        ${kpiCard('PDR', s.pdr, fmt(s.pdrPct)+'% من إجمالي المقاوم')}
+        ${kpiCard('CRE', s.cre, 'عينة')}
+        ${kpiCard('ESBL', s.esbl, 'عينة')}
+        ${kpiCard('MRSA', s.mrsa, 'عينة')}
+        ${kpiCard('VRE', s.vre, 'عينة')}
+        ${kpiCard('VRSA', s.vrsa, 'عينة')}
+        ${kpiCard('كليبسيلا مقاومة', s.klebsiellaResistant, 'معدل '+fmt(s.klebsiellaRate)+' /1000 يوم إقامة')}
+      </div>
+    </div>
+
+    <div class="card section">
+      <h2>📋 استمارة 8 — معدل حدوث الميكروبات المقاومة <span class="tag">تلقائي</span></h2>
+      <table>
+        <tbody>
+          <tr><td>إجمالي عدد المزارع الإيجابية خلال الشهر</td><td style="font-weight:800;">${s.total}</td></tr>
+          <tr><td>عدد عينات الميكروبات المقاومة للمضادات الحيوية (1)</td><td style="font-weight:800;">${s.totalResistant}</td></tr>
+          <tr><td>عدد عينات بكتيريا الكليبسيلا المقاومة (2)</td><td style="font-weight:800;">${s.klebsiellaResistant}</td></tr>
+          <tr><td>أيام إقامة المرضى (3)</td><td style="font-weight:800;">${s.patientDays}</td></tr>
+          <tr><td>معدل حدوث الميكروبات المقاومة 1000×(3/1)</td><td style="font-weight:800; color:var(--teal);">${fmt(s.resistantRate)}</td></tr>
+          <tr><td>معدل حدوث كليبسيلا المقاومة 1000×(3/2)</td><td style="font-weight:800; color:var(--teal);">${fmt(s.klebsiellaRate)}</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card section">
+      <h2>📋 استمارة 9 — نسب أنماط المقاومة <span class="tag">تلقائي</span></h2>
+      <table>
+        <thead><tr><th>عدد عينات المقاومة (1)</th><th>MDR (2)</th><th>XDR (3)</th><th>PDR (4)</th><th>MDR%</th><th>XDR%</th><th>PDR%</th></tr></thead>
+        <tbody><tr>
+          <td>${s.totalResistant}</td><td>${s.mdr}</td><td>${s.xdr}</td><td>${s.pdr}</td>
+          <td>${fmt(s.mdrPct)}%</td><td>${fmt(s.xdrPct)}%</td><td>${fmt(s.pdrPct)}%</td>
+        </tr></tbody>
+      </table>
+    </div>
+
+    <div class="card section">
+      <h2>🧪 سرد نتائج المزارع بالاسم</h2>
+      <div class="note">تصنيف "عدوى مستشفيات (ترصد معملي)" يُحسب تلقائياً وفق قاعدة الترصد المعملي: يوم الدخول = يوم 1، والحالة تُحتسب من اليوم الرابع فأكثر (مختلفة عن الترصد العادي الذي يبدأ من اليوم الثالث).</div>
+      <div style="overflow:auto; border:1px solid var(--border); border-radius:8px; margin-bottom:16px;">
+      <table class="wide">
+        <thead><tr>
+          <th>اسم المريض</th><th>الرقم الطبي</th><th>القسم</th><th>تاريخ المزرعة</th>
+          <th>اليوم التقويمي</th><th>التصنيف</th>
+          <th>Gram</th><th>Genus</th><th>نمط المقاومة</th><th>نوع العينة</th><th>أُضيفت بواسطة</th><th></th>
+        </tr></thead>
+        <tbody>${rows.length? rows : `<tr><td colspan="12" style="color:var(--muted);">لا توجد نتائج مسجّلة بعد</td></tr>`}</tbody>
+      </table>
+      </div>
+
+      <h2 style="font-size:14px;">➕ إضافة نتيجة مزرعة جديدة</h2>
+      <div class="row3">
+        <div class="field"><label>اسم المريض</label><input type="text" id="lPatient"></div>
+        <div class="field"><label>الرقم الطبي</label><input type="text" id="lRecord"></div>
+        <div class="field"><label>القسم</label>
+          <select id="lDept"><option value="">—</option>${ABX_DEPTS.map(d=>`<option value="${d.label}">${d.label}</option>`).join('')}</select>
+        </div>
+        <div class="field"><label>تاريخ الدخول</label><input type="date" id="lAdmit"></div>
+        <div class="field"><label>تاريخ سحب المزرعة</label><input type="date" id="lCulture"></div>
+        <div class="field"><label>نوع الميكروب (Gram)</label><select id="lGram"><option value="">—</option>${GRAM_TYPES.map(v=>`<option value="${v}">${v}</option>`).join('')}</select></div>
+        <div class="field"><label>الجنس (Genus)</label><input type="text" id="lGenus" placeholder="مثال: Klebsiella"></div>
+        <div class="field"><label>النوع (Species)</label><input type="text" id="lSpecies"></div>
+        <div class="field"><label>نمط المقاومة</label><select id="lResist"><option value="">—</option>${RESISTANCE.map(v=>`<option value="${v}">${v}</option>`).join('')}</select></div>
+        <div class="field"><label>نوع العينة</label><select id="lSample"><option value="">—</option>${SAMPLE_TYPES.map(v=>`<option value="${v}">${v}</option>`).join('')}</select></div>
+        <div class="field"><label>مزرعة سابقة بنفس الميكروب خلال 14 يوم؟</label><select id="lPrior"><option value="">—</option><option value="نعم">نعم</option><option value="لا">لا</option></select></div>
+        <div class="field"><label>الأجهزة الغازية</label><input type="text" id="lDevices" placeholder="مثال: CVC / Foley / MV"></div>
+        <div class="field"><label>عوامل الخطر</label><input type="text" id="lRisk" placeholder="مثال: سكري، كلى"></div>
+      </div>
+      <button class="btn" id="btnAddLab">➕ إضافة النتيجة</button>
+      <div class="note">معدل الميكروبات المقاومة = إجمالي العينات المقاومة (أي نمط غير "لا يوجد") ÷ إجمالي أيام إقامة المرضى (كل الأقسام) × 1000.</div>
+    </div>`;
+
+  document.getElementById('view').querySelectorAll('button[data-dellab]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      if(!confirm('هل تريد حذف هذه النتيجة؟')) return;
+      state.labCases = state.labCases.filter(c=>c.id!==btn.dataset.dellab);
+      queueSave(); viewLabSurv();
+    });
+  });
+  document.getElementById('btnAddLab').addEventListener('click', ()=>{
+    const c = emptyLabCase();
+    c.patientName = document.getElementById('lPatient').value;
+    c.medicalRecord = document.getElementById('lRecord').value;
+    c.dept = document.getElementById('lDept').value;
+    c.admissionDate = document.getElementById('lAdmit').value;
+    c.cultureDate = document.getElementById('lCulture').value;
+    c.gram = document.getElementById('lGram').value;
+    c.genus = document.getElementById('lGenus').value;
+    c.species = document.getElementById('lSpecies').value;
+    c.resistance = document.getElementById('lResist').value;
+    c.sampleType = document.getElementById('lSample').value;
+    c.priorCulture14d = document.getElementById('lPrior').value;
+    c.devices = document.getElementById('lDevices').value;
+    c.riskFactors = document.getElementById('lRisk').value;
+    if(!c.patientName){ showToast('من فضلك أدخل اسم المريض على الأقل'); return; }
+    c.createdBy = currentUser?.email || 'غير معروف';
+    c.createdAt = new Date().toISOString();
+    state.labCases.push(c);
+    queueSave(); showToast('تمت إضافة النتيجة'); viewLabSurv();
   });
 }
 
@@ -1468,6 +1657,18 @@ function exportToExcel(customState){
   abxRows.push(abxTotalsRow);
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([abxHead, ...abxRows]), 'متابعة المضادات الحيوية');
 
+  // --- الترصد المعملي ---
+  const labHead = ['اسم المريض','الرقم الطبي','القسم','تاريخ الدخول','تاريخ سحب المزرعة','Gram','Genus','Species','نمط المقاومة','نوع العينة','مزرعة سابقة خلال 14 يوم','الأجهزة','عوامل الخطر','أُضيفت بواسطة'];
+  const labRows = state.labCases.map(c=>[c.patientName,c.medicalRecord,c.dept,c.admissionDate,c.cultureDate,c.gram,c.genus,c.species,c.resistance,c.sampleType,c.priorCulture14d,c.devices,c.riskFactors,c.createdBy||'']);
+  const labSum = labSurvSummary();
+  labRows.push([]);
+  labRows.push(['ملخص تلقائي']);
+  labRows.push(['إجمالي المزارع الإيجابية', labSum.total]);
+  labRows.push(['إجمالي العينات المقاومة', labSum.totalResistant]);
+  labRows.push(['معدل الميكروبات المقاومة /1000 يوم إقامة', fmt(labSum.resistantRate)]);
+  labRows.push(['MDR', labSum.mdr, 'XDR', labSum.xdr, 'PDR', labSum.pdr, 'CRE', labSum.cre, 'ESBL', labSum.esbl, 'MRSA', labSum.mrsa, 'VRE', labSum.vre, 'VRSA', labSum.vrsa]);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([labHead, ...labRows]), 'الترصد المعملي');
+
   const fname = `HAI_${(state.facility.name||'المنشأة').replace(/[^\u0600-\u06FFa-zA-Z0-9]/g,'_')}_${period}.xlsx`;
   XLSX.writeFile(wb, fname);
   showToast('تم تنزيل ملف Excel');
@@ -1485,7 +1686,7 @@ async function archiveCurrentMonth(){
     const { doc, setDoc } = window.__firestoreFns;
     const closedAt = new Date();
     const id = closedAt.toISOString().replace(/[:.]/g,'-');
-    const t = computeTotals(); const ssi = ssiRate(); const nicu = nicuCensusTotals(); const hw = abxHospitalWide();
+    const t = computeTotals(); const ssi = ssiRate(); const nicu = nicuCensusTotals(); const hw = abxHospitalWide(); const lab = labSurvSummary();
     const record = {
       closedAt: closedAt.toISOString(),
       period: state.facility.period || '',
@@ -1494,7 +1695,9 @@ async function archiveCurrentMonth(){
         cauti:t.cauti, clabsi:t.clabsi, vap:t.vap, ssi:ssi.cases, operations:ssi.operations,
         nicuPatientDays: nicu.pts,
         abxPrescriptions: hw.prescriptions, abxAccessRate: hw.accessRate,
-        casesLogged: state.infectionCases.length, ssiCasesLogged: state.ssiCases.length
+        casesLogged: state.infectionCases.length, ssiCasesLogged: state.ssiCases.length,
+        labCultures: lab.total, labResistant: lab.totalResistant, labResistantRate: lab.resistantRate,
+        labMdr: lab.mdr, labXdr: lab.xdr, labPdr: lab.pdr
       },
       snapshot: JSON.parse(JSON.stringify(state))
     };
@@ -1606,6 +1809,7 @@ async function viewArchive(){
         <td>${r.summary?.abxPrescriptions ?? '—'}</td>
         <td>${r.summary?.abxAccessRate!=null ? fmt(r.summary.abxAccessRate)+'%' : '—'}</td>
         <td>${r.summary?.casesLogged ?? '—'}</td>
+        <td>${r.summary?.labResistantRate!=null ? fmt(r.summary.labResistantRate) : '—'}</td>
         <td><button class="btn small" data-id="${r.id}">⬇️ Excel</button></td>
       </tr>`).join('');
 
@@ -1617,7 +1821,7 @@ async function viewArchive(){
         <table>
           <thead><tr>
             <th>الفترة</th><th>المنشأة</th><th>تاريخ القفل</th><th>CAUTI</th><th>CLABSI</th><th>VAP</th><th>SSI</th>
-            <th>أيام الحضانة</th><th>وصفات المضادات</th><th>نسبة الإتاحة</th><th>حالات مسجّلة بالاسم</th><th></th>
+            <th>أيام الحضانة</th><th>وصفات المضادات</th><th>نسبة الإتاحة</th><th>حالات مسجّلة بالاسم</th><th>معدل المقاومة</th><th></th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>
@@ -1648,6 +1852,7 @@ function renderAll(){
   else if(currentPage==='surgery') viewSurgery();
   else if(currentPage==='caseLog') viewCaseLog();
   else if(currentPage==='abx') viewAbx();
+  else if(currentPage==='labSurv') viewLabSurv();
   else if(currentPage==='archive') viewArchive();
   else if(currentPage==='admin') viewAdmin();
   else if(currentPage==='settings') viewSettings();
