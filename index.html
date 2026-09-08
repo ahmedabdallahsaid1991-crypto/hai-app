@@ -290,7 +290,7 @@ function defaultAbxCensus(){
 
 const ORGANISMS = ['Staphylococcus aureus','MRSA','Coagulase-negative Staphylococci','Enterococcus spp.','VRE',
   'E. coli','Klebsiella spp.','Pseudomonas aeruginosa','Acinetobacter spp.','Candida spp.','أخرى','غير معروف'];
-const RESISTANCE = ['لا يوجد','MDR','XDR','PDR','ESBL','CRE','MRSA','VRSA','VRE','غير معروف'];
+const RESISTANCE = ['لا يوجد','MDR','XDR','PDR','ESBL','CRE','VRSA','VRE','غير معروف'];
 const GRAM_TYPES = ['gram+ve','gram-ve','Fungi'];
 const SAMPLE_TYPES = ['blood','urine','sputum','pus discharge','CSF','wound swab','أخرى'];
 const INFECTION_TYPES = ['CLABSI','CAUTI','VAP','VAE','Non-device BSI','Non-CAUTI UTI','NV-HAP','أخرى'];
@@ -300,7 +300,7 @@ const SSI_CLASS = ['سطحية (Superficial)','عميقة (Deep)','عضو/تجو
 
 function emptyInfectionCase(dept){
   return { id: 'c'+Date.now()+Math.random().toString(36).slice(2,6), dept,
-    patientName:'', medicalRecord:'', admissionDate:'', device:'', onsetDate:'',
+    patientName:'', medicalRecord:'', patientAge:'', admissionDate:'', device:'', onsetDate:'',
     infectionType:'', organism:'', resistance:'', sampleType:'', dischargeDate:'', outcome:'', notes:'',
     linkedLabCaseId:null, createdBy:'', createdAt:'' };
 }
@@ -313,7 +313,7 @@ function emptySsiCase(){
 
 function emptyLabCase(){
   return { id: 'l'+Date.now()+Math.random().toString(36).slice(2,6),
-    patientName:'', medicalRecord:'', dept:'', admissionDate:'', cultureDate:'',
+    patientName:'', medicalRecord:'', patientAge:'', dept:'', admissionDate:'', cultureDate:'',
     gram:'', genus:'', species:'', resistance:'', sampleType:'',
     priorCulture14d:'', devices:'', riskFactors:'', notes:'',
     linkedInfectionCaseId:null, linkedSsiCaseId:null, createdBy:'', createdAt:'' };
@@ -1173,6 +1173,7 @@ function viewCaseLog(){
     <tr>
       <td>${c.patientName||'—'}</td>
       <td>${c.medicalRecord||'—'}</td>
+      <td>${c.patientAge||'—'}</td>
       <td>${c.admissionDate||'—'}</td>
       <td>${c.device||'—'}</td>
       <td>${c.infectionType||'—'}</td>
@@ -1205,11 +1206,11 @@ function viewCaseLog(){
       <div style="overflow:auto; border:1px solid var(--border); border-radius:8px; margin-bottom:16px;">
       <table class="wide">
         <thead><tr>
-          <th>اسم المريض</th><th>الرقم الطبي</th><th>تاريخ الدخول</th><th>الجهاز</th>
+          <th>اسم المريض</th><th>الرقم الطبي</th><th>السن</th><th>تاريخ الدخول</th><th>الجهاز</th>
           <th>نوع العدوى</th><th>تاريخ ظهور العدوى</th><th>اليوم التقويمي</th><th>التصنيف</th>
           <th>الميكروب</th><th>نمط المقاومة</th><th>نوع العينة</th><th>الحالة عند الخروج</th><th>ملاحظات</th><th>أُضيفت بواسطة</th><th></th>
         </tr></thead>
-        <tbody>${rows.length? rows : `<tr><td colspan="15" style="color:var(--muted);">لا توجد حالات مسجّلة بعد في ${deptLabel}</td></tr>`}</tbody>
+        <tbody>${rows.length? rows : `<tr><td colspan="16" style="color:var(--muted);">لا توجد حالات مسجّلة بعد في ${deptLabel}</td></tr>`}</tbody>
       </table>
       </div>
 
@@ -1217,6 +1218,7 @@ function viewCaseLog(){
       <div class="row3">
         <div class="field"><label>اسم المريض</label><input type="text" id="ncPatient" value="${editingCase?.patientName||''}"></div>
         <div class="field"><label>الرقم الطبي</label><input type="text" id="ncRecord" value="${editingCase?.medicalRecord||''}"></div>
+        <div class="field"><label>سن المريض</label><input type="number" min="0" id="ncAge" value="${editingCase?.patientAge||''}"></div>
         <div class="field"><label>تاريخ الدخول</label><input type="date" id="ncAdmit" value="${editingCase?.admissionDate||''}"></div>
         <div class="field"><label>الجهاز المخترق</label><select id="ncDevice">${selectOptions(DEVICE_TYPES, editingCase?.device)}</select></div>
         <div class="field"><label>نوع العدوى</label><select id="ncType">${selectOptions(INFECTION_TYPES, editingCase?.infectionType)}</select></div>
@@ -1258,6 +1260,7 @@ function viewCaseLog(){
     const target = editingCase || emptyInfectionCase(currentCaseDept);
     target.patientName = document.getElementById('ncPatient').value;
     target.medicalRecord = document.getElementById('ncRecord').value;
+    target.patientAge = document.getElementById('ncAge').value;
     target.admissionDate = document.getElementById('ncAdmit').value;
     target.device = document.getElementById('ncDevice').value;
     target.infectionType = document.getElementById('ncType').value;
@@ -1275,6 +1278,7 @@ function viewCaseLog(){
       if(!labCase){ labCase = emptyLabCase(); target.linkedLabCaseId = labCase.id; labCase.linkedInfectionCaseId = target.id; state.labCases.push(labCase); }
       labCase.patientName = target.patientName;
       labCase.medicalRecord = target.medicalRecord;
+      labCase.patientAge = target.patientAge;
       labCase.dept = currentCaseDept==='icu' ? 'العناية المركزة' : 'الحضانة';
       labCase.admissionDate = target.admissionDate;
       labCase.cultureDate = target.onsetDate;
@@ -1419,7 +1423,7 @@ function viewLabSurv(){
     const cls = classifyHAI(day, 4);
     return `
     <tr>
-      <td>${c.patientName||'—'}</td><td>${c.medicalRecord||'—'}</td><td>${c.dept||'—'}</td>
+      <td>${c.patientName||'—'}</td><td>${c.medicalRecord||'—'}</td><td>${c.patientAge||'—'}</td><td>${c.dept||'—'}</td>
       <td>${c.cultureDate||'—'}</td><td>${day ?? '—'}</td>
       <td style="${cls.qualifies===true?'color:var(--good); font-weight:700;':cls.qualifies===false?'color:var(--alert); font-weight:700;':''}">${cls.text}</td>
       <td>${c.gram||'—'}</td><td>${c.genus||'—'}</td>
@@ -1487,11 +1491,11 @@ function viewLabSurv(){
       <div style="overflow:auto; border:1px solid var(--border); border-radius:8px; margin-bottom:16px;">
       <table class="wide">
         <thead><tr>
-          <th>اسم المريض</th><th>الرقم الطبي</th><th>القسم</th><th>تاريخ المزرعة</th>
+          <th>اسم المريض</th><th>الرقم الطبي</th><th>السن</th><th>القسم</th><th>تاريخ المزرعة</th>
           <th>اليوم التقويمي</th><th>التصنيف</th>
           <th>Gram</th><th>Genus</th><th>نمط المقاومة</th><th>نوع العينة</th><th>ملاحظات</th><th>أُضيفت بواسطة</th><th></th>
         </tr></thead>
-        <tbody>${rows.length? rows : `<tr><td colspan="13" style="color:var(--muted);">لا توجد نتائج مسجّلة بعد</td></tr>`}</tbody>
+        <tbody>${rows.length? rows : `<tr><td colspan="14" style="color:var(--muted);">لا توجد نتائج مسجّلة بعد</td></tr>`}</tbody>
       </table>
       </div>
 
@@ -1499,6 +1503,7 @@ function viewLabSurv(){
       <div class="row3">
         <div class="field"><label>اسم المريض</label><input type="text" id="lPatient" value="${editingLab?.patientName||''}"></div>
         <div class="field"><label>الرقم الطبي</label><input type="text" id="lRecord" value="${editingLab?.medicalRecord||''}"></div>
+        <div class="field"><label>سن المريض</label><input type="number" min="0" id="lAge" value="${editingLab?.patientAge||''}"></div>
         <div class="field"><label>القسم</label>
           <select id="lDept">${selectOptions(ABX_DEPTS.map(d=>d.label), editingLab?.dept)}</select>
         </div>
@@ -1552,6 +1557,7 @@ function viewLabSurv(){
     const c = editingLab || emptyLabCase();
     c.patientName = document.getElementById('lPatient').value;
     c.medicalRecord = document.getElementById('lRecord').value;
+    c.patientAge = document.getElementById('lAge').value;
     c.dept = document.getElementById('lDept').value;
     c.admissionDate = document.getElementById('lAdmit').value;
     c.cultureDate = document.getElementById('lCulture').value;
@@ -1574,6 +1580,7 @@ function viewLabSurv(){
       if(!ic){ ic = emptyInfectionCase(mappedDept); c.linkedInfectionCaseId = ic.id; ic.linkedLabCaseId = c.id; state.infectionCases.push(ic); }
       ic.patientName = c.patientName;
       ic.medicalRecord = c.medicalRecord;
+      ic.patientAge = c.patientAge;
       ic.admissionDate = c.admissionDate;
       ic.onsetDate = c.cultureDate;
       ic.infectionType = infType;
@@ -1609,11 +1616,11 @@ function exportLabSurvOnly(){
   const s = labSurvSummary();
   const period = state.facility.period || new Date().toISOString().slice(0,7);
 
-  const labHead = ['اسم المريض','الرقم الطبي','القسم','تاريخ الدخول','تاريخ سحب المزرعة','اليوم التقويمي','التصنيف','Gram','Genus','Species','نمط المقاومة','نوع العينة','مزرعة سابقة خلال 14 يوم','الأجهزة','عوامل الخطر','ملاحظات','أُضيفت بواسطة'];
+  const labHead = ['اسم المريض','الرقم الطبي','السن','القسم','تاريخ الدخول','تاريخ سحب المزرعة','اليوم التقويمي','التصنيف','Gram','Genus','Species','نمط المقاومة','نوع العينة','مزرعة سابقة خلال 14 يوم','الأجهزة','عوامل الخطر','ملاحظات','أُضيفت بواسطة'];
   const labRows = state.labCases.map(c=>{
     const day = calendarDay(c.admissionDate, c.cultureDate);
     const cls = classifyHAI(day, 4);
-    return [c.patientName,c.medicalRecord,c.dept,c.admissionDate,c.cultureDate,day??'',cls.text,c.gram,c.genus,c.species,c.resistance,c.sampleType,c.priorCulture14d,c.devices,c.riskFactors,c.notes||'',c.createdBy||''];
+    return [c.patientName,c.medicalRecord,c.patientAge,c.dept,c.admissionDate,c.cultureDate,day??'',cls.text,c.gram,c.genus,c.species,c.resistance,c.sampleType,c.priorCulture14d,c.devices,c.riskFactors,c.notes||'',c.createdBy||''];
   });
   XLSX.utils.book_append_sheet(wb2, XLSX.utils.aoa_to_sheet([labHead, ...labRows]), 'الترصد المعملي');
 
@@ -1835,8 +1842,8 @@ function exportToExcel(customState){
   // --- سرد حالات العدوى (ICU + NICU) ---
   ['icu','nicu'].forEach(dept=>{
     const cases = state.infectionCases.filter(c=>c.dept===dept);
-    const head = ['اسم المريض','الرقم الطبي','تاريخ الدخول','الجهاز','نوع العدوى','تاريخ ظهور العدوى','الميكروب','نمط المقاومة','نوع العينة','الحالة عند الخروج','ملاحظات','أُضيفت بواسطة','تاريخ الإضافة'];
-    const rows = cases.map(c=>[c.patientName,c.medicalRecord,c.admissionDate,c.device,c.infectionType,c.onsetDate,c.organism,c.resistance,c.sampleType,c.outcome,c.notes||'',c.createdBy||'',c.createdAt? new Date(c.createdAt).toLocaleString('ar-EG') : '']);
+    const head = ['اسم المريض','الرقم الطبي','السن','تاريخ الدخول','الجهاز','نوع العدوى','تاريخ ظهور العدوى','الميكروب','نمط المقاومة','نوع العينة','الحالة عند الخروج','ملاحظات','أُضيفت بواسطة','تاريخ الإضافة'];
+    const rows = cases.map(c=>[c.patientName,c.medicalRecord,c.patientAge,c.admissionDate,c.device,c.infectionType,c.onsetDate,c.organism,c.resistance,c.sampleType,c.outcome,c.notes||'',c.createdBy||'',c.createdAt? new Date(c.createdAt).toLocaleString('ar-EG') : '']);
     const sheetName = dept==='icu' ? 'أقسام الرعايات المركزة' : 'الرعاية المركزة لحديثى الولادة';
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([head, ...rows]), sheetName);
   });
@@ -1866,8 +1873,8 @@ function exportToExcel(customState){
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([abxHead, ...abxRows]), 'متابعة المضادات الحيوية');
 
   // --- الترصد المعملي ---
-  const labHead = ['اسم المريض','الرقم الطبي','القسم','تاريخ الدخول','تاريخ سحب المزرعة','Gram','Genus','Species','نمط المقاومة','نوع العينة','مزرعة سابقة خلال 14 يوم','الأجهزة','عوامل الخطر','ملاحظات','أُضيفت بواسطة'];
-  const labRows = state.labCases.map(c=>[c.patientName,c.medicalRecord,c.dept,c.admissionDate,c.cultureDate,c.gram,c.genus,c.species,c.resistance,c.sampleType,c.priorCulture14d,c.devices,c.riskFactors,c.notes||'',c.createdBy||'']);
+  const labHead = ['اسم المريض','الرقم الطبي','السن','القسم','تاريخ الدخول','تاريخ سحب المزرعة','Gram','Genus','Species','نمط المقاومة','نوع العينة','مزرعة سابقة خلال 14 يوم','الأجهزة','عوامل الخطر','ملاحظات','أُضيفت بواسطة'];
+  const labRows = state.labCases.map(c=>[c.patientName,c.medicalRecord,c.patientAge,c.dept,c.admissionDate,c.cultureDate,c.gram,c.genus,c.species,c.resistance,c.sampleType,c.priorCulture14d,c.devices,c.riskFactors,c.notes||'',c.createdBy||'']);
   const labSum = labSurvSummary();
   labRows.push([]);
   labRows.push(['ملخص تلقائي']);
