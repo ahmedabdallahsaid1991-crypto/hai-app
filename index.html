@@ -196,6 +196,7 @@
   .mini-table th{color:var(--ink-soft);font-weight:700;font-size:11.5px;}
   .mini-table tfoot td{font-weight:900;color:var(--gold);border-top:2px solid var(--teal-soft);border-bottom:none;}
   .row-del{border:none;background:none;color:var(--rose);cursor:pointer;font-size:14px;}
+  .row-edit{border:none;background:none;color:var(--gold);cursor:pointer;font-size:13px;}
 
   /* Compare */
   .chart-wrap{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:14px;margin-bottom:16px;}
@@ -744,6 +745,8 @@
             <option value="manager">مدير (صلاحية كاملة)</option>
             <option value="doctor">طبيب</option>
             <option value="reception">استقبال</option>
+            <option value="purchasing">مدير مشتريات</option>
+            <option value="inventory">أمين مخزن</option>
           </select>
         </div>
         <div class="field" style="margin-bottom:8px;"><input type="password" id="newUserPassword" placeholder="كلمة مرور (٦ أحرف على الأقل)"></div>
@@ -898,7 +901,7 @@ window.__firestoreClinicId = '';
 
   const SUPERVISOR_EMAIL = 'ahmed.abdallah.said1991@gmail.com';
   const PLATFORM_CLINIC_ID = '__platform__';
-  const ROLE_LABEL = { manager:'مدير', doctor:'طبيب', reception:'استقبال' };
+  const ROLE_LABEL = { manager:'مدير', doctor:'طبيب', reception:'استقبال', purchasing:'مدير مشتريات', inventory:'أمين مخزن' };
 
   // ---------- Cross-clinic KV access (للمشرف العام بس) ----------
   async function getClinicKV(clinicId, key){
@@ -928,7 +931,9 @@ window.__firestoreClinicId = '';
   const ROLE_TABS = {
     manager: ['dash','add','records','expenses','patients','doctors','labs','prices','compare','import','users','audit','notifications'],
     doctor: ['dash','add','records','patients','compare'],
-    reception: ['add','records','expenses','patients']
+    reception: ['add','records','expenses','patients'],
+    purchasing: ['prices'],
+    inventory: ['prices']
   };
   const PENDING_MANAGER_TABS = ['doctors','labs','prices','users'];
   let users = [];          // [{id, name, role, pin(hashed), linkedDoctor}]
@@ -2111,6 +2116,27 @@ window.__firestoreClinicId = '';
   });
 
   function labTotal(labId){ return labsData.work.filter(w=>w.labId===labId).reduce((s,w)=>s+w.total,0); }
+  let editingLabWorkId = {}; // { [labId]: workEntryId } — تعديل صف شغل معمل
+  function resetLabWorkForm(lid){
+    delete editingLabWorkId[lid];
+    const box = document.getElementById('labsList');
+    const dateInp = box.querySelector(`.lab-work-date[data-lid="${lid}"]`);
+    if(dateInp) dateInp.value = new Date().toISOString().slice(0,10);
+    const patientInp = box.querySelector(`.lab-work-patient[data-lid="${lid}"]`);
+    if(patientInp) patientInp.value = '';
+    const doctorSel = box.querySelector(`.lab-work-doctor[data-lid="${lid}"]`);
+    if(doctorSel) doctorSel.value = '';
+    const itemSel = box.querySelector(`.lab-work-item[data-lid="${lid}"]`);
+    if(itemSel) itemSel.value = '';
+    const qtyInp = box.querySelector(`.lab-work-qty[data-lid="${lid}"]`);
+    if(qtyInp) qtyInp.value = 1;
+    const discInp = box.querySelector(`.lab-work-disc[data-lid="${lid}"]`);
+    if(discInp) discInp.value = '';
+    const banner = box.querySelector(`.lab-work-edit-banner[data-lid="${lid}"]`);
+    if(banner) banner.style.display = 'none';
+    const addBtn = box.querySelector(`.lab-add-work[data-lid="${lid}"]`);
+    if(addBtn) addBtn.textContent = 'إضافة';
+  }
 
   function renderLabs(){
     document.getElementById('labsCount').textContent = labsData.labs.length + ' معمل · ' + labsData.work.length + ' حالة';
@@ -2181,10 +2207,14 @@ window.__firestoreClinicId = '';
             <div class="field" style="margin-bottom:8px;"><input type="number" class="lab-work-disc" data-lid="${lab.id}" placeholder="خصم% (اختياري)" min="0" max="100"></div>
             <button class="btn-mini lab-add-work" data-lid="${lab.id}">إضافة</button>
           </div>
+          <div class="edit-banner lab-work-edit-banner" data-lid="${lab.id}" style="display:none;">
+            <span>وضع التعديل: بتعدل صف موجود</span>
+            <button type="button" class="cancel-lab-work-edit" data-lid="${lab.id}">إلغاء</button>
+          </div>
           <table class="mini-table">
             <thead><tr><th>التاريخ</th><th>المريض</th><th>الطبيب</th><th>الصنف</th><th>العدد</th><th>خصم%</th><th>الإجمالي</th><th></th></tr></thead>
             <tbody>
-              ${work.map(w=>`<tr><td>${escapeHtml(w.date)}</td><td>${escapeHtml(w.patient||'')}</td><td>${escapeHtml(w.doctor||'—')}</td><td>${escapeHtml(w.itemName)}</td><td>${w.qty}</td><td>${w.discPct?w.discPct+'٪':'—'}</td><td>${fmt(w.total)}</td><td><button class="row-del lab-work-del" data-id="${w.id}">✕</button></td></tr>`).join('') || '<tr><td colspan="8" style="text-align:center;color:var(--ink-soft);">لا يوجد شغل مسجل بعد</td></tr>'}
+              ${work.map(w=>`<tr><td>${escapeHtml(w.date)}</td><td>${escapeHtml(w.patient||'')}</td><td>${escapeHtml(w.doctor||'—')}</td><td>${escapeHtml(w.itemName)}</td><td>${w.qty}</td><td>${w.discPct?w.discPct+'٪':'—'}</td><td>${fmt(w.total)}</td><td><button class="row-edit lab-work-edit" data-id="${w.id}" data-lid="${lab.id}">✎</button> <button class="row-del lab-work-del" data-id="${w.id}">✕</button></td></tr>`).join('') || '<tr><td colspan="8" style="text-align:center;color:var(--ink-soft);">لا يوجد شغل مسجل بعد</td></tr>'}
             </tbody>
             <tfoot><tr><td colspan="6">الإجمالي</td><td colspan="2">${fmt(total)}</td></tr></tfoot>
           </table>
@@ -2309,15 +2339,54 @@ window.__firestoreClinicId = '';
         const qty = parseFloat(qtyInp.value)||1;
         const discPct = Math.max(0, Math.min(100, parseFloat(discInp.value)||0));
         const total = qty*item.price*(1-discPct/100);
-        labsData.work.push({
-          id: genId(), labId: lid, date: dateInp.value || new Date().toISOString().slice(0,10),
-          patient: patientInp.value.trim(), doctor: doctorSel.value||'', itemId: item.id, itemName: item.name, qty, unitPrice: item.price, discPct, total
-        });
+        const editId = editingLabWorkId[lid];
+        if(editId){
+          const idx = labsData.work.findIndex(w=>w.id===editId);
+          if(idx>-1){
+            labsData.work[idx] = Object.assign({}, labsData.work[idx], {
+              date: dateInp.value || new Date().toISOString().slice(0,10),
+              patient: patientInp.value.trim(), doctor: doctorSel.value||'', itemId: item.id, itemName: item.name,
+              qty, unitPrice: item.price, discPct, total,
+              editedBy: currentUser?currentUser.name:'—', editedAt: new Date().toISOString()
+            });
+          }
+          delete editingLabWorkId[lid];
+          resetLabWorkForm(lid);
+          toast('تم تعديل الصف');
+          const labObj = labsData.labs.find(l=>l.id===lid);
+          logAction(`تعديل صف معمل: ${labObj?labObj.name:lid} · ${item.name}`);
+        } else {
+          labsData.work.push({
+            id: genId(), labId: lid, date: dateInp.value || new Date().toISOString().slice(0,10),
+            patient: patientInp.value.trim(), doctor: doctorSel.value||'', itemId: item.id, itemName: item.name, qty, unitPrice: item.price, discPct, total
+          });
+          toast('تمت إضافة الصنف لسجل المعمل');
+        }
         await saveLabs();
         renderLabs();
         renderDashboard();
-        toast('تمت إضافة الصنف لسجل المعمل');
       });
+    });
+    box.querySelectorAll('.lab-work-edit').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const lid = btn.dataset.lid;
+        const w = labsData.work.find(x=>x.id===btn.dataset.id);
+        if(!w) return;
+        box.querySelector(`.lab-work-date[data-lid="${lid}"]`).value = w.date;
+        box.querySelector(`.lab-work-patient[data-lid="${lid}"]`).value = w.patient||'';
+        box.querySelector(`.lab-work-doctor[data-lid="${lid}"]`).value = w.doctor||'';
+        box.querySelector(`.lab-work-item[data-lid="${lid}"]`).value = w.itemId;
+        box.querySelector(`.lab-work-qty[data-lid="${lid}"]`).value = w.qty;
+        box.querySelector(`.lab-work-disc[data-lid="${lid}"]`).value = w.discPct||'';
+        editingLabWorkId[lid] = w.id;
+        const banner = box.querySelector(`.lab-work-edit-banner[data-lid="${lid}"]`);
+        if(banner) banner.style.display = 'flex';
+        const addBtn = box.querySelector(`.lab-add-work[data-lid="${lid}"]`);
+        if(addBtn) addBtn.textContent = 'حفظ التعديل';
+      });
+    });
+    box.querySelectorAll('.cancel-lab-work-edit').forEach(btn=>{
+      btn.addEventListener('click', ()=> resetLabWorkForm(btn.dataset.lid));
     });
     box.querySelectorAll('.print-lab-invoice').forEach(btn=>{
       btn.addEventListener('click', ()=>{ printLabInvoice(btn.dataset.lid); });
